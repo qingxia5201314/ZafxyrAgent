@@ -1,0 +1,27 @@
+# Build output
+ai-agent-app/build/
+
+# Keystore & signing key — JANGAN pernah di-commit
+*.jks
+*.keystore
+*.p12
+
+# Secrets / environment
+.env
+*.env
+secrets.json
+
+# Paket module (berisi key di config.json).
+# Lampirkan lewat GitHub Releases, bukan commit ke repo.
+*.zip
+!aiagent_notif_v1.7.0.zip
+
+# Logs
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

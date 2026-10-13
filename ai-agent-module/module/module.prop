@@ -1,0 +1,6 @@
+id=aiagent
+name=ZafxyrAgent AI
+version=v1.8.0
+versionCode=180
+author=ig:@zafxyra+opencode
+description=Local AI agent for Android. Multi-provider (Gemini / OpenRouter-OpenAI-compatible) with phone-control tools (open_app, open_path, open_url, web_search, run_shell, file ops) and automatic model fallback. Live chat UI with real-time progress and tappable suggestion chips (SSE). Tap the 'ZafxyrAgent AI' notification to open the chat. Set provider/API key in config.json.
