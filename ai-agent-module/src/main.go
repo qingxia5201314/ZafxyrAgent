@@ -237,6 +237,9 @@ func loadConfig() {
 			break
 		}
 	}
+	// 默认自动打开聊天界面。放在读取之前设置，这样配置文件里没有 autoopen
+	// 字段时也能保持 true（原来只在读取成功后设置，配置缺失就变 false）。
+	cfg.AutoOpen = true
 	if used == "" {
 		// 原来这里直接 return，导致配置缺失时所有默认值都不生效
 		// （最明显的后果：Port 保持 0，服务绑到随机端口，用户完全连不上）。
@@ -244,7 +247,6 @@ func loadConfig() {
 		log.Printf("config read error: %v（继续使用默认配置）", err)
 	} else {
 		log.Printf("config loaded: %s", used)
-		cfg.AutoOpen = true
 		if e := json.Unmarshal(b, &cfg); e != nil {
 			log.Printf("config parse error: %v", e)
 		}
@@ -2401,6 +2403,69 @@ func handleReset(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"ok": "true"})
 }
 
+// handleConfig 让用户在聊天界面里直接改配置，不用 root 编辑器去动 JSON。
+// GET 不返回 api_key 明文，只告诉前端「配过没有」。
+func handleConfig(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	switch r.Method {
+	case http.MethodGet:
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"provider":    cfg.Provider,
+			"base_url":    cfg.BaseURL,
+			"model":       cfg.Model,
+			"max_tokens":  cfg.MaxTokens,
+			"port":        cfg.Port,
+			"has_key":     strings.TrimSpace(cfg.APIKey) != "",
+			"allow_shell": shellAllowed(),
+			"config_path": configPath(),
+		})
+	case http.MethodPost:
+		var body struct {
+			APIKey    string `json:"api_key"`
+			BaseURL   string `json:"base_url"`
+			Model     string `json:"model"`
+			MaxTokens int    `json:"max_tokens"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"ok":false,"error":"bad json"}`, http.StatusBadRequest)
+			return
+		}
+		if v := strings.TrimSpace(body.APIKey); v != "" {
+			cfg.APIKey = v
+		}
+		if v := strings.TrimSpace(body.BaseURL); v != "" {
+			cfg.BaseURL = v
+			// provider 必须和 base_url 匹配，否则会用错协议格式静默失败。
+			// 指向 Google 的就是 gemini，其余一律按 OpenAI 兼容处理（DeepSeek / OpenRouter / 本地 llama.cpp 都是）。
+			if strings.Contains(v, "generativelanguage.googleapis.com") {
+				cfg.Provider = "gemini"
+			} else {
+				cfg.Provider = "openai"
+			}
+		}
+		if v := strings.TrimSpace(body.Model); v != "" {
+			cfg.Model = v
+			// 把新模型放到可选列表首位并去重，否则下拉框选不中它
+			// （原逻辑只改 cfg.Model，但前端选项来自 cfg.Models）。
+			list := []string{v}
+			for _, m := range cfg.Models {
+				if m != v {
+					list = append(list, m)
+				}
+			}
+			cfg.Models = list
+		}
+		if body.MaxTokens > 0 {
+			cfg.MaxTokens = body.MaxTokens
+		}
+		saveConfig()
+		log.Printf("[config] updated via UI (key set=%v model=%q)", cfg.APIKey != "", cfg.Model)
+		fmt.Fprint(w, `{"ok":true}`)
+	default:
+		http.Error(w, `{"ok":false,"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
 func main() {
 	defMod := ""
 	if exe, err := os.Executable(); err == nil {
@@ -2426,6 +2491,7 @@ func main() {
 	mux.HandleFunc("/model/random", handleRandomModel)
 	mux.HandleFunc("/history", handleHistory)
 	mux.HandleFunc("/reset", handleReset)
+	mux.HandleFunc("/config", handleConfig)
 	mux.HandleFunc("/events", handleEvents)
 
 	// 调试端点：仅在环境变量 AGENTD_DEBUG=1 时挂载，用于在真机上直接验证工具行为

@@ -65,6 +65,21 @@
           font-size:15px; font-weight:600; }
   #send:disabled, #q:disabled { opacity:.5; }
   #hint { font-size:12px; color:#7b828c; padding:10px 16px 0; line-height:1.6; }
+  #settings { position:fixed; inset:0; background:rgba(0,0,0,.62); display:flex;
+              align-items:flex-end; justify-content:center; z-index:20; }
+  #settings.hidden { display:none; }
+  .sheet { background:#171b21; width:100%; max-width:520px; border-radius:16px 16px 0 0;
+           padding:20px 18px 26px; }
+  .sheet h2 { font-size:16px; margin:0 0 6px; }
+  .sheet label { display:block; font-size:12px; color:#8b929c; margin:13px 0 5px; }
+  .sheet input { width:100%; box-sizing:border-box; background:#0f1216; color:#e8eaed;
+                 border:1px solid #232830; border-radius:10px; padding:10px 12px;
+                 font-size:14px; font-family:inherit; }
+  .sheet .row { display:flex; gap:10px; margin-top:18px; }
+  .sheet button { flex:1; padding:11px; border-radius:10px; border:1px solid #2b313b;
+                  background:#1d222a; color:#e8eaed; font-size:14px; font-family:inherit; }
+  .sheet button.primary { background:#3b82f6; border-color:#3b82f6; color:#fff; font-weight:600; }
+  #s_hint { font-size:11.5px; color:#6b7280; margin:11px 0 0; line-height:1.5; word-break:break-all; }
 </style>
 </head>
 <body>
@@ -72,10 +87,10 @@
   <span class="dot" id="dot"></span>
   <h1>ZafxyrAgent AI</h1>
   <button id="reset" type="button">清空</button>
+  <button id="cfg" type="button">设置</button>
 </header>
 <div id="hint">
-  Contoh: “buka WhatsApp” · “cek sisa storage” · “list file di Download” · “buka google.com”
-</div>
+  示例：“打开微信” · “看看剩余存储” · “列出 Download 里的文件” · “打开 google.com”</div>
 <div id="log"></div>
 <div id="chips"></div>
 <form id="f">
@@ -83,6 +98,25 @@
   <textarea id="q" rows="1" placeholder="让它做什么？例如：打开微信，给张三发消息" autocomplete="off"></textarea>
   <button id="send" type="submit">发送</button>
 </form>
+<div id="settings" class="hidden">
+  <div class="sheet">
+    <h2>设置</h2>
+    <label for="s_base">API 地址</label>
+    <input id="s_base" placeholder="https://api.deepseek.com/v1" autocomplete="off">
+    <label for="s_key">API Key</label>
+    <input id="s_key" type="password" placeholder="留空表示不修改" autocomplete="off">
+    <label for="s_model">模型</label>
+    <input id="s_model" placeholder="deepseek-chat" autocomplete="off">
+    <p id="s_hint"></p>
+    <div class="row">
+      <button id="s_cancel" type="button">取消</button>
+      <button id="s_save" type="button" class="primary">保存</button>
+    </div>
+    <div class="row">
+      <button id="s_random" type="button">随机换一个模型</button>
+    </div>
+  </div>
+</div>
 <script>
 const log = document.getElementById('log');
 const q = document.getElementById('q');
@@ -374,13 +408,68 @@ document.getElementById('reset').addEventListener('click', async () => {
 
 modelSel.addEventListener('change', () => setModel(modelSel.value));
 
+// ---- 设置面板：改 API 地址 / Key / 模型，不用去动 /data/adb 下的 JSON ----
+const settingsEl = document.getElementById('settings');
+const sBase = document.getElementById('s_base');
+const sKey = document.getElementById('s_key');
+const sModel = document.getElementById('s_model');
+const sHint = document.getElementById('s_hint');
+
+document.getElementById('cfg').addEventListener('click', async () => {
+  settingsEl.classList.remove('hidden');
+  sHint.textContent = '读取中…';
+  try {
+    const c = await (await fetch('/config')).json();
+    sBase.value = c.base_url || '';
+    sModel.value = c.model || '';
+    sKey.value = '';
+    sHint.textContent = (c.has_key ? '已配置 API Key。' : '还没配置 API Key。') +
+      ' 配置文件：' + (c.config_path || '未知');
+  } catch (e) {
+    sHint.textContent = '读取配置失败：' + e;
+  }
+});
+
+document.getElementById('s_cancel').addEventListener('click', () => {
+  settingsEl.classList.add('hidden');
+});
+
+document.getElementById('s_save').addEventListener('click', async () => {
+  const body = { base_url: sBase.value.trim(), model: sModel.value.trim() };
+  if (sKey.value.trim()) body.api_key = sKey.value.trim();
+  try {
+    const r = await fetch('/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (r.ok) {
+      sHint.textContent = '已保存。';
+      settingsEl.classList.add('hidden');
+      location.reload();
+    } else {
+      sHint.textContent = '保存失败（HTTP ' + r.status + '）';
+    }
+  } catch (e) {
+    sHint.textContent = '保存失败：' + e;
+  }
+});
+
+document.getElementById('s_random').addEventListener('click', async () => {
+  await randomizeModel();
+  settingsEl.classList.add('hidden');
+});
+
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && !isBusy) randomizeModel();
+  // 原来这里每次切回页面就随机换模型，会把用户明确配置的模型
+  // 悄悄换成别的（配了 DeepSeek 却走 Gemini 的 key，直接报错）。
+  // 改成只刷新模型状态，不再自动随机。
+  if (!document.hidden && !isBusy) loadModels();
 });
 
 connect();
 loadHistory();
-loadModels().then(randomizeModel);
+loadModels();
 q.focus();
 </script>
 </body>
