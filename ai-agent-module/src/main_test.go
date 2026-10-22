@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -105,5 +107,56 @@ func TestKeyNamesCoverage(t *testing.T) {
 		if _, ok := keyNames[k]; !ok {
 			t.Errorf("keyNames 缺少常用键 %s", k)
 		}
+	}
+}
+
+// 配置查找顺序 + 缺失时的默认值。
+// 这两个点原来都有 bug：配置缺失时提前 return 导致 Port=0（服务绑随机端口），
+// 配置又只写在模块目录里（升级模块会被覆盖，且和 README 说的路径不一致）。
+func TestConfigPathPriority(t *testing.T) {
+	dir := t.TempDir()
+	oldHome, oldMod, oldCfg := home, modDir, cfg
+	defer func() { home, modDir, cfg = oldHome, oldMod, oldCfg }()
+
+	home = filepath.Join(dir, "home")
+	modDir = filepath.Join(dir, "mod")
+	if err := os.MkdirAll(home, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(modDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	modConf := filepath.Join(modDir, "config.json")
+
+	// 1) 只有模块目录里的出厂模板 -> 回退读它
+	if err := os.WriteFile(modConf, []byte(`{"port":1234,"model":"from-mod"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg = Config{}
+	loadConfig()
+	if cfg.Port != 1234 || cfg.Model != "from-mod" {
+		t.Errorf("应回退读模块目录配置，得到 port=%d model=%q", cfg.Port, cfg.Model)
+	}
+
+	// 2) home 里也有一份 -> 优先 home，这样模块升级不会覆盖用户配置
+	if err := os.WriteFile(configPath(), []byte(`{"port":4321,"model":"from-home"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg = Config{}
+	loadConfig()
+	if cfg.Port != 4321 || cfg.Model != "from-home" {
+		t.Errorf("应优先读 home 配置，得到 port=%d model=%q", cfg.Port, cfg.Model)
+	}
+
+	// 3) 两份都没有 -> 默认值必须生效
+	_ = os.Remove(configPath())
+	_ = os.Remove(modConf)
+	cfg = Config{}
+	loadConfig()
+	if cfg.Port != 8787 {
+		t.Errorf("配置缺失时端口应回落 8787，得到 %d", cfg.Port)
+	}
+	if cfg.Model == "" || cfg.BaseURL == "" {
+		t.Errorf("配置缺失时默认值不全: model=%q baseURL=%q", cfg.Model, cfg.BaseURL)
 	}
 }

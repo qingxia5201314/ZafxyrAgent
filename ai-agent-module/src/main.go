@@ -216,18 +216,37 @@ func httpClient(timeout time.Duration) *http.Client {
 	}
 }
 
+// configPath 是用户可编辑的配置位置。
+// 放在 home（/data/adb/aiagent/）而不是模块目录，模块升级时不会被解压覆盖。
+func configPath() string {
+	return filepath.Join(home, "config.json")
+}
+
 func loadConfig() {
-	p := filepath.Join(modDir, "config.json")
-	b, err := os.ReadFile(p)
-	if err != nil {
+	// 优先读用户目录；读不到再回退模块目录里的出厂模板，
+	// 兼容老版本把配置写在模块目录里的情况。
+	candidates := []string{configPath(), filepath.Join(modDir, "config.json")}
+	var (
+		b    []byte
+		err  error
+		used string
+	)
+	for _, p := range candidates {
+		if b, err = os.ReadFile(p); err == nil {
+			used = p
+			break
+		}
+	}
+	if used == "" {
 		// 原来这里直接 return，导致配置缺失时所有默认值都不生效
 		// （最明显的后果：Port 保持 0，服务绑到随机端口，用户完全连不上）。
 		// 改成记一条日志后继续走默认值。
 		log.Printf("config read error: %v（继续使用默认配置）", err)
 	} else {
+		log.Printf("config loaded: %s", used)
 		cfg.AutoOpen = true
-		if err := json.Unmarshal(b, &cfg); err != nil {
-			log.Printf("config parse error: %v", err)
+		if e := json.Unmarshal(b, &cfg); e != nil {
+			log.Printf("config parse error: %v", e)
 		}
 	}
 	prov := strings.ToLower(strings.TrimSpace(cfg.Provider))
@@ -311,7 +330,8 @@ func saveConfig() {
 	if err != nil {
 		return
 	}
-	if err := os.WriteFile(filepath.Join(modDir, "config.json"), b, 0644); err != nil {
+	// 0600：配置里有 API key，别给别的应用读
+	if err := os.WriteFile(configPath(), b, 0600); err != nil {
 		log.Printf("config save error: %v", err)
 	}
 }
@@ -396,7 +416,7 @@ func notify(title, text, url string) {
 
 func callLLM(msgs []Msg) (string, error) {
 	if strings.TrimSpace(cfg.APIKey) == "" {
-		return "", fmt.Errorf("API key belum di-set. Ambil key gratis di aistudio.google.com, masukkan ke %s lalu restart module.", filepath.Join(modDir, "config.json"))
+		return "", fmt.Errorf("还没配置 API Key。把它填到 %s 然后重启模块（或直接在聊天界面里设置）。", configPath())
 	}
 	if cfg.Provider == "openai" {
 		return callOpenAI(msgs)
