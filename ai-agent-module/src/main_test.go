@@ -5,7 +5,34 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
+
+// 中文必须按字符截断，切出半个 UTF-8 序列就会变成乱码。
+// 真机上 screen 的工具输出踩过这个：显示成 `"看看剩余存储" · �...`。
+func TestTruncateUTF8(t *testing.T) {
+	zh := strings.Repeat("中文测试", 30) // 120 个字符
+	got := truncate(zh, 60)
+	if !utf8.ValidString(got) {
+		t.Fatalf("截断后不是合法 UTF-8: %q", got)
+	}
+	if n := len([]rune(got)); n != 63 { // 60 个字符 + "..."
+		t.Errorf("期望 60 字符 + 省略号（63 rune），得到 %d", n)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Errorf("应带省略号: %q", got)
+	}
+
+	if got := truncate("hello", 10); got != "hello" {
+		t.Errorf("未超长不该截断，得到 %q", got)
+	}
+	if got := truncate("hello world", 5); got != "hello..." {
+		t.Errorf("ASCII 截断结果不对: %q", got)
+	}
+	if got := truncate("  hi  ", 10); got != "hi" {
+		t.Errorf("应去掉首尾空白，得到 %q", got)
+	}
+}
 
 func TestParseBounds(t *testing.T) {
 	cases := []struct {

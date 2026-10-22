@@ -79,12 +79,16 @@ func nextToolID() int {
 	return int(atomic.AddInt64(&toolSeq, 1))
 }
 
+// truncate 按「字符」而不是字节截断。
+// 中文一个字占 3 个字节，按字节切会把 UTF-8 序列劈成两半，输出乱码
+// （真机上 screen 返回的节点文字就踩过这个：会显示成 "..." · �...）。
 func truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	return string(r[:n]) + "..."
 }
 
 func broadcast(e event) {

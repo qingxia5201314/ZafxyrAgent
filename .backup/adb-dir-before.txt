@@ -1,0 +1,14 @@
+total 4858
+drwx------ 11 root   root      3452 2026-10-20 18:40 .
+drwxrwx--x 68 system system    4096 2026-10-16 20:30 ..
+drwxr-xr-x  3 root   root      3452 2026-07-23 05:04 YH
+-rw-r--r--  1 root   root        64 2026-07-24 16:26 boot_hash
+drwx------  7 root   root      3452 2026-07-24 16:26 ksu
+-rwxr-xr-x  1 root   root   4925400 2026-10-20 18:40 ksud
+drwx------  3 root   root      3452 2026-07-24 16:28 lite_modules_update
+drwxr-xr-x  7 root   root      3452 2026-10-16 09:39 lspd
+drwxr-xr-x 12 root   root      3452 2026-08-20 12:39 modules
+drwx------  2 root   root      3452 2026-08-06 16:52 modules_update
+drwxr-xr-x  2 root   root      3452 2026-07-24 16:30 service.d
+drwxr-xr-x  7 root   root      3452 2026-07-24 16:28 tricky_store
+drwxr-xr-x  2 root   root      3452 2026-10-16 09:38 zygisksu
