@@ -3,8 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="dark light">
 <title>ZafxyrAgent</title>
+<script>
+/* 在样式生效前定主题，避免加载瞬间闪白/闪黑 */
+(function () {
+  try {
+    var m = localStorage.getItem("zafxyr-theme") || "light";
+    var t = m === "system"
+      ? (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")
+      : (m === "light" ? "light" : "dark");
+    document.documentElement.dataset.theme = t;
+  } catch (e) {}
+})();
+</script>
 <style>
 /* ==========================================================================
    设计 token 取自 DSH 深色主题（dsh-client-ui-theme 的 --dsw-alias-* 映射）
@@ -29,9 +41,36 @@
   --hover:#ffffff14;
   --active:#ffffff24;
   --bubble:#2c2c2e;
+  --glass:rgba(27,27,28,.86);
+  --glass-strong:rgba(35,35,36,.94);
+  --mask:rgba(0,0,0,.55);
   --radius:14px;
   --safe-b:env(safe-area-inset-bottom,0px);
   --safe-t:env(safe-area-inset-top,0px);
+}
+/* 浅色主题：取自 DSH 的浅色 token（neutral-bluish / deepseek 系列） */
+:root[data-theme="light"]{
+  --bg:#ffffff;
+  --layer1:#f9fafb;
+  --layer2:#f5f6f7;
+  --layer3:#eef1f5;
+  --layer4:#e1e5ee;
+  --border:#0000000f;
+  --border2:#0000001a;
+  --text:#0f1115;
+  --text2:#3c3c3d;
+  --text3:#61666b;
+  --text4:#979da6;
+  --accent:#4176e6;
+  --accent2:#3b82f6;
+  --danger:#ec1313;
+  --ok:#22c55e;
+  --hover:#0000000f;
+  --active:#0000001a;
+  --bubble:#edf3fe;
+  --glass:rgba(255,255,255,.82);
+  --glass-strong:rgba(249,250,251,.95);
+  --mask:rgba(15,17,21,.32);
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 /* 手机端不显示滚动条（手势滚动照常） */
@@ -125,10 +164,8 @@ input,textarea,select{font-family:inherit}
 .msg.ai ul,.msg.ai ol{margin:6px 0;padding-left:20px}
 .msg.ai li{margin:3px 0}
 .msg.ai .h{font-weight:600;margin:10px 0 5px;color:var(--text)}
-.msg.ai table{
-  border-collapse:collapse;margin:8px 0;font-size:13px;width:100%;
-  display:block;overflow-x:auto;
-}
+.msg.ai .tw{overflow-x:auto;margin:8px 0;-webkit-overflow-scrolling:touch}
+.msg.ai table{border-collapse:collapse;font-size:13px;width:100%}
 .msg.ai th,.msg.ai td{
   border:1px solid var(--border2);padding:5px 9px;text-align:left;
   white-space:nowrap;
@@ -158,7 +195,7 @@ input,textarea,select{font-family:inherit}
 #chips{flex:0 0 auto;display:flex;flex-wrap:wrap;gap:7px;padding:0 12px 8px}
 #chips:empty{display:none}
 #chips button{
-  border:1px solid var(--border2);background:var(--layer2);color:var(--text2);
+  border:1px solid var(--border2);background:var(--glass-strong);color:var(--text2);
   padding:7px 11px;border-radius:10px;font-size:12.5px;
 }
 #chips button:active{background:var(--layer3)}
@@ -206,14 +243,17 @@ input,textarea,select{font-family:inherit}
 
 /* ---------------- 抽屉 ---------------- */
 #mask{
-  position:fixed;inset:0;background:#00000080;z-index:40;
+  position:fixed;inset:0;background:var(--mask);z-index:40;
   opacity:0;pointer-events:none;transition:opacity .22s;
 }
 #mask.on{opacity:1;pointer-events:auto}
 
 #drawer{
   position:fixed;top:0;bottom:0;left:0;width:min(82vw,340px);z-index:50;
-  background:var(--layer1);border-right:1px solid var(--border);
+  background:var(--glass);
+  -webkit-backdrop-filter:blur(26px) saturate(1.6);
+  backdrop-filter:blur(26px) saturate(1.6);
+  border-right:1px solid var(--border);
   display:flex;flex-direction:column;
   transform:translateX(-102%);transition:transform .24s cubic-bezier(.32,.72,0,1);
   padding-top:var(--safe-t);
@@ -315,7 +355,10 @@ input,textarea,select{font-family:inherit}
 }
 #settings.on{display:flex}
 .sheet{
-  width:100%;background:var(--layer2);border-radius:18px 18px 0 0;
+  width:100%;background:var(--glass-strong);
+  -webkit-backdrop-filter:blur(26px) saturate(1.6);
+  backdrop-filter:blur(26px) saturate(1.6);
+  border-radius:18px 18px 0 0;
   padding:16px 16px calc(20px + var(--safe-b));
   border-top:1px solid var(--border2);
   max-height:88dvh;overflow-y:auto;
@@ -331,6 +374,12 @@ input,textarea,select{font-family:inherit}
 }
 .sheet input:focus{border-color:var(--accent2)}
 .sheet .hint{font-size:11.5px;color:var(--text4);margin:8px 0 0;line-height:1.6;word-break:break-all}
+.sheet .seg{display:flex;gap:6px;margin-top:6px}
+.sheet .seg button{
+  flex:1;padding:9px 6px;border-radius:10px;font-size:13px;
+  background:var(--bg);border:1px solid var(--border2);color:var(--text3);
+}
+.sheet .seg button.on{background:var(--accent2);border-color:var(--accent2);color:#fff;font-weight:600}
 .sheet .row{display:flex;gap:9px;margin-top:16px}
 .sheet .row button{
   flex:1;padding:11px;border-radius:11px;font-size:14px;
@@ -421,6 +470,12 @@ input,textarea,select{font-family:inherit}
     <input id="s-model" placeholder="deepseek-chat" autocomplete="off">
     <label for="s-tokens">最大回复 token</label>
     <input id="s-tokens" type="number" inputmode="numeric" placeholder="2048">
+    <label>外观</label>
+    <div class="seg" id="theme-seg">
+      <button type="button" data-th="system">跟随系统</button>
+      <button type="button" data-th="dark">深色</button>
+      <button type="button" data-th="light">浅色</button>
+    </div>
     <p class="hint" id="s-hint"></p>
     <div class="row">
       <button id="s-cancel">取消</button>
@@ -595,9 +650,10 @@ function renderMD(src) {
         rows.push(lines[i].split("|").slice(1, -1).map(c => c.trim()));
         i++;
       }
-      let t = "<table><thead><tr>" + head.map(c => "<th>" + c + "</th>").join("") + "</tr></thead><tbody>";
+      let t = '<div class="tw"><table><thead><tr>' +
+        head.map(c => "<th>" + c + "</th>").join("") + "</tr></thead><tbody>";
       t += rows.map(r => "<tr>" + r.map(c => "<td>" + c + "</td>").join("") + "</tr>").join("");
-      t += "</tbody></table>";
+      t += "</tbody></table></div>";
       out.push(t);
       continue;
     }
@@ -954,8 +1010,9 @@ function handleEvent(ev) {
       break;
     case "reply":
       if (streamEl) {
-        // 流式阶段是纯文本，收尾换成渲染版
-        setRich(streamEl, streamEl.textContent);
+        // 流式阶段累积的是模型原始输出（结尾可能带 SARAN 行），
+        // 收尾必须换成服务端清理过的 ev.text，否则 SARAN 会残留在正文里。
+        setRich(streamEl, ev.text || streamEl.textContent);
         streamEl.classList.remove("streaming");
         streamEl = null;
       } else if (!logEl.querySelector(".msg.ai")) {
@@ -1039,6 +1096,42 @@ function connectEvents() {
     es.onerror = () => { /* 断线由浏览器自动重连 */ };
   } catch (_) {}
 }
+
+/* ==========================================================================
+   主题
+   ========================================================================== */
+const THEME_KEY = "zafxyr-theme";
+
+function themeMode() {
+  try { return localStorage.getItem(THEME_KEY) || "light"; } catch (e) { return "light"; }
+}
+
+function applyTheme(mode) {
+  const prefersLight = window.matchMedia("(prefers-color-scheme: light)").matches;
+  const t = mode === "system" ? (prefersLight ? "light" : "dark")
+                              : (mode === "light" ? "light" : "dark");
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem(THEME_KEY, mode); } catch (e) {}
+  const meta = document.querySelector('meta[name="color-scheme"]');
+  if (meta) meta.content = t;
+  document.querySelectorAll("#theme-seg button").forEach(b => {
+    b.classList.toggle("on", b.dataset.th === mode);
+  });
+}
+
+document.getElementById("theme-seg").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (b) applyTheme(b.dataset.th);
+});
+
+try {
+  window.matchMedia("(prefers-color-scheme: light)")
+    .addEventListener("change", () => {
+      if (themeMode() === "system") applyTheme("system");
+    });
+} catch (e) {}
+
+applyTheme(themeMode());
 
 /* ==========================================================================
    设置

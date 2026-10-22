@@ -228,3 +228,32 @@ func TestEnsureActiveAfterArchiveAll(t *testing.T) {
 		t.Errorf("应切到未归档的 b1，得到 %q", activeID)
 	}
 }
+
+// 建议行必须能从正文里摘干净，半角/全角冒号、「建议」前缀、SARAN- 都要认。
+// 漏认的后果是 SARAN 行留在正文里，同时 chips 又补一份，重复显示。
+func TestParseSuggestionsDelimiters(t *testing.T) {
+	cases := []struct {
+		name     string
+		in       string
+		wantText string
+		wantN    int
+	}{
+		{"半角冒号", "正文内容\nSARAN: 甲 | 乙", "正文内容", 2},
+		{"全角冒号", "正文内容\nSARAN：甲 | 乙", "正文内容", 2},
+		{"中文前缀", "正文内容\n建议：甲 | 乙", "正文内容", 2},
+		{"SUGGEST", "正文内容\nSUGGEST: x | y", "正文内容", 2},
+		{"SARAN 连字符", "正文内容\nSARAN-单条", "正文内容", 1},
+		{"无建议行", "只有正文", "只有正文", 0},
+		{"超长截断", "正文\nSARAN: a|b|c|d|e|f", "正文", 4},
+		{"引号清理", "正文\nSARAN: \"甲\" | '乙'", "正文", 2},
+	}
+	for _, c := range cases {
+		gotText, gotSugg := parseSuggestions(c.in)
+		if gotText != c.wantText {
+			t.Errorf("%s: 正文 = %q, 期望 %q", c.name, gotText, c.wantText)
+		}
+		if len(gotSugg) != c.wantN {
+			t.Errorf("%s: 建议 %d 条, 期望 %d: %v", c.name, len(gotSugg), c.wantN, gotSugg)
+		}
+	}
+}

@@ -1,6 +1,6 @@
 id=aiagent
 name=ZafxyrAgent AI
-version=v2.0.2
-versionCode=202
+version=v2.1.0
+versionCode=210
 author=qingxia5201314 (fork of @zafxyra)
 description=Chinese fork of ZafxyrAgent with a rebuilt UI. Local AI agent for rooted Android (KernelSU/Magisk/APatch). UI automation tools (screen/tap/swipe/key/text/screenshot) plus shell, file ops and reminders, so it can actually operate apps instead of only launching them. OpenAI-compatible / Gemini. Set the API key in the chat UI or /data/adb/aiagent/config.json.

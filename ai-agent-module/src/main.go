@@ -679,7 +679,10 @@ func pickModel() string {
 	return ""
 }
 
-const maxAgentSteps = 8
+// maxAgentSteps 是一次请求内最多执行多少轮工具调用。
+// 原来是 8，复杂任务（例如统计几十个 App 的通知）走到一半就被截断，
+// 模型没有机会输出正文，界面只剩下兜底文案，看起来像"AI 中断了"。
+const maxAgentSteps = 24
 
 func geminiAgent(model string, msgs []Msg) (string, int, string, error) {
 	contents := []gemContent{}
@@ -719,7 +722,8 @@ func geminiAgent(model string, msgs []Msg) (string, int, string, error) {
 		contents = append(contents, gemContent{Role: "model", Parts: cparts})
 		contents = append(contents, gemContent{Role: "user", Parts: rparts})
 	}
-	return "Maaf, tugasnya butuh terlalu banyak langkah. Coba pecah jadi perintah yang lebih kecil.", 200, "", nil
+	return "我已经连续执行了 24 步，达到单次上限。任务可能还没做完 —— " +
+		"直接说「继续」我就接着往下做，或者把范围缩小一点（比如一次只处理一个 App）。", 200, "", nil
 }
 
 func callGemini(msgs []Msg) (string, error) {
@@ -753,33 +757,33 @@ func toolDecls() []interface{} {
 	funcs := []interface{}{
 		map[string]interface{}{
 			"name":        "open_app",
-			"description": "Buka (launch) sebuah aplikasi di HP pengguna berdasarkan namanya (mis. WhatsApp, YouTube, Instagram) atau nama package (mis. com.whatsapp).",
+			"description": "按名称打开手机上的应用（如 微信、网易云音乐），也可以直接给包名（如 com.tencent.mm）。",
 			"parameters": map[string]interface{}{
 				"type": "OBJECT",
 				"properties": map[string]interface{}{
-					"app": map[string]interface{}{"type": "STRING", "description": "nama aplikasi atau nama package"},
+					"app": map[string]interface{}{"type": "STRING", "description": "应用名或包名"},
 				},
 				"required": []string{"app"},
 			},
 		},
 		map[string]interface{}{
 			"name":        "open_url",
-			"description": "Buka sebuah URL/tautan di browser HP pengguna. Tambahkan https:// bila tidak ada.",
+			"description": "在手机浏览器里打开一个网址。如果没有写协议，自动补 https://。",
 			"parameters": map[string]interface{}{
 				"type": "OBJECT",
 				"properties": map[string]interface{}{
-					"url": map[string]interface{}{"type": "STRING", "description": "URL yang akan dibuka"},
+					"url": map[string]interface{}{"type": "STRING", "description": "要打开的网址"},
 				},
 				"required": []string{"url"},
 			},
 		},
 		map[string]interface{}{
 			"name":        "web_search",
-			"description": "Cari sesuatu di Google dan buka hasil pencariannya di browser HP.",
+			"description": "用 Google 搜索，并在浏览器里打开结果页。",
 			"parameters": map[string]interface{}{
 				"type": "OBJECT",
 				"properties": map[string]interface{}{
-					"query": map[string]interface{}{"type": "STRING", "description": "kata kunci pencarian"},
+					"query": map[string]interface{}{"type": "STRING", "description": "搜索关键词"},
 				},
 				"required": []string{"query"},
 			},
@@ -788,13 +792,13 @@ func toolDecls() []interface{} {
 	if shellAllowed() {
 		funcs = append(funcs, map[string]interface{}{
 			"name": "run_shell",
-			"description": "Jalankan perintah shell di HP pengguna (root) dan kembalikan output. " +
-				"Pakai HANYA saat pengguna minta menjalankan perintah/shell, cek sistem, kelola file, atau tugas teknis. " +
-				"Contoh: 'cek storage', 'list file Download', 'sisa baterai', 'pm list packages | grep wa'.",
+			"description": "以 root 身份在手机上执行 shell 命令并返回输出。" +
+				"用于查看系统信息、批量处理文件、修改设置、读取通知库等。" +
+				"例如：'df -h'、'ls -l /sdcard/Download'、'dumpsys battery'、'pm list packages | grep wechat'。",
 			"parameters": map[string]interface{}{
 				"type": "OBJECT",
 				"properties": map[string]interface{}{
-					"command": map[string]interface{}{"type": "STRING", "description": "perintah shell yang dijalankan via sh -c"},
+					"command": map[string]interface{}{"type": "STRING", "description": "要通过 sh -c 执行的命令"},
 				},
 				"required": []string{"command"},
 			},
@@ -810,15 +814,15 @@ func toolDecls() []interface{} {
 		}
 	}
 	funcs = append(funcs,
-		gemTool("write_file", "Tulis/buat file baru di HP (menimpa bila sudah ada); folder induk dibuat otomatis. Gunakan path absolut, mis. /storage/emulated/0/Download/note.txt.", map[string]interface{}{"path": gemStr("path absolut file"), "content": gemStr("isi file")}, []string{"path", "content"}),
-		gemTool("read_file", "Baca isi sebuah file teks di HP. Gunakan path absolut.", map[string]interface{}{"path": gemStr("path absolut file")}, []string{"path"}),
-		gemTool("list_dir", "Tampilkan daftar file/folder pada sebuah direktori di HP.", map[string]interface{}{"path": gemStr("path direktori, mis. /storage/emulated/0/Download")}, []string{"path"}),
-		gemTool("make_dir", "Buat folder (beserta folder induknya) di HP.", map[string]interface{}{"path": gemStr("path folder")}, []string{"path"}),
-		gemTool("move_file", "Pindahkan atau ganti nama file/folder di HP.", map[string]interface{}{"from": gemStr("path sumber"), "to": gemStr("path tujuan")}, []string{"from", "to"}),
-		gemTool("delete_path", "Hapus file atau folder di HP.", map[string]interface{}{"path": gemStr("path yang akan dihapus")}, []string{"path"}),
-		gemTool("download_url", "Unduh file dari internet lalu simpan ke path di HP.", map[string]interface{}{"url": gemStr("URL file yang diunduh"), "path": gemStr("path tujuan penyimpanan")}, []string{"url", "path"}),
-		gemTool("open_path", "Buka sebuah FILE atau FOLDER di HP dengan aplikasi penampil/pengelola bawaan. Pakai untuk permintaan seperti 'buka file catatan.txt', 'buka folder Download', 'buka foto/video/musik'. BUKAN untuk aplikasi; untuk aplikasi pakai open_app.", map[string]interface{}{"path": gemStr("path absolut file atau folder, mis. /storage/emulated/0/Download/catatan.txt")}, []string{"path"}),
-		gemTool("schedule_message", "Jadwalkan PESAN OTOMATIS dari agent ke pengguna setelah jeda waktu tertentu (pengingat/reminder). Agent mengirim pesan ini sendiri tanpa ditanya lagi. Pakai saat pengguna minta diingatkan sesuatu, mis. 'ingetin 10 menit lagi minum obat'.", map[string]interface{}{"delay_seconds": map[string]interface{}{"type": "INTEGER", "description": "jeda waktu dalam detik sebelum pesan dikirim"}, "message": gemStr("isi pesan pengingat yang akan dikirim nanti")}, []string{"delay_seconds", "message"}),
+		gemTool("write_file", "写入或新建文件（已存在则覆盖），父目录会自动创建。必须用绝对路径，如 /storage/emulated/0/Download/note.txt。", map[string]interface{}{"path": gemStr("文件的绝对路径"), "content": gemStr("文件内容")}, []string{"path", "content"}),
+		gemTool("read_file", "读取一个文本文件的内容。使用绝对路径。", map[string]interface{}{"path": gemStr("文件的绝对路径")}, []string{"path"}),
+		gemTool("list_dir", "列出某个目录下的文件和文件夹。", map[string]interface{}{"path": gemStr("目录路径，如 /storage/emulated/0/Download")}, []string{"path"}),
+		gemTool("make_dir", "创建目录（父目录会一并创建）。", map[string]interface{}{"path": gemStr("目录路径")}, []string{"path"}),
+		gemTool("move_file", "移动或重命名文件/文件夹。", map[string]interface{}{"from": gemStr("源路径"), "to": gemStr("目标路径")}, []string{"from", "to"}),
+		gemTool("delete_path", "删除文件或文件夹。", map[string]interface{}{"path": gemStr("要删除的路径")}, []string{"path"}),
+		gemTool("download_url", "从网络下载文件并保存到手机上的指定路径。", map[string]interface{}{"url": gemStr("要下载的文件地址"), "path": gemStr("保存路径")}, []string{"url", "path"}),
+		gemTool("open_path", "用系统的默认应用打开一个文件或文件夹。适用于「打开 catatan.txt」「打开 Download 文件夹」「打开这张图片」这类请求。注意：打开应用请用 open_app，不要用这个。", map[string]interface{}{"path": gemStr("文件或目录的绝对路径，如 /storage/emulated/0/Download/catatan.txt")}, []string{"path"}),
+		gemTool("schedule_message", "安排一条定时提醒：到点后 agent 会主动把这条消息发给你。当用户说「10 分钟后提醒我吃药」时使用。", map[string]interface{}{"delay_seconds": map[string]interface{}{"type": "INTEGER", "description": "多少秒后发送（延迟秒数）"}, "message": gemStr("到点要发送的提醒内容")}, []string{"delay_seconds", "message"}),
 		// ---- UI 自动化：让 agent 真正能操作界面，而不只是开关 App ----
 		gemTool("screen", "读取当前界面结构，返回带中心坐标的可点节点列表。需要看界面、找按钮、确认上一步操作是否生效时，优先用这个，比截图省大量 token。", map[string]interface{}{}, []string{}),
 		gemTool("tap", "点击屏幕坐标。坐标必须来自 screen 返回的 @(x,y)，不要自己估算。duration_ms>=400 视为长按。", map[string]interface{}{"x": map[string]interface{}{"type": "INTEGER", "description": "横坐标"}, "y": map[string]interface{}{"type": "INTEGER", "description": "纵坐标"}, "duration_ms": map[string]interface{}{"type": "INTEGER", "description": "按住时长毫秒，默认 80；>=400 为长按"}}, []string{"x", "y"}),
@@ -954,7 +958,7 @@ func openApp(name string) (string, error) {
 	defer noteAction("open_app")
 	pkg := resolvePackage(name)
 	if pkg == "" {
-		return "", fmt.Errorf("aplikasi \"%s\" tidak ada/terpasang di HP ini", name)
+		return "", fmt.Errorf("aplikasi \"%s\" 没有安装或不存在", name)
 	}
 	// Cara utama: resolve komponen launcher lalu 'am start -W'. Output sistem
 	// ("Status: ok" / "...brought to the front") menjadi acuan keberhasilan.
@@ -966,7 +970,7 @@ func openApp(name string) (string, error) {
 			!strings.Contains(s, "Error") && !strings.Contains(s, "does not exist") &&
 			!strings.Contains(s, "not found") {
 			log.Printf("openApp %s: dibawa ke depan (focused=%v)", pkg, focused(pkg))
-			return fmt.Sprintf("Oke, %s sudah kubuka.", pkg), nil
+			return fmt.Sprintf("好，已打开 %s。", pkg), nil
 		}
 	}
 	// Fallback: monkey.
@@ -974,7 +978,7 @@ func openApp(name string) (string, error) {
 	s := string(out)
 	log.Printf("monkey -p %s => err=%v out=%q", pkg, err, strings.TrimSpace(s))
 	if err == nil && !strings.Contains(s, "No activities found") && !strings.Contains(s, "aborted") && !strings.Contains(s, "Error") {
-		return fmt.Sprintf("Oke, %s sudah kubuka.", pkg), nil
+		return fmt.Sprintf("好，已打开 %s。", pkg), nil
 	}
 	return "", fmt.Errorf("gagal buka %s: %s", pkg, strings.TrimSpace(s))
 }
@@ -1109,11 +1113,11 @@ func openPath(path string) (string, error) {
 	defer noteAction("open_path")
 	p := expandPath(path)
 	if p == "" {
-		return "", fmt.Errorf("path kosong")
+		return "", fmt.Errorf("路径为空")
 	}
 	fi, err := os.Stat(p)
 	if err != nil {
-		return "", fmt.Errorf("tidak ditemukan: %s", p)
+		return "", fmt.Errorf("找不到: %s", p)
 	}
 	if fi.IsDir() {
 		out, e := exec.Command("am", "start", "-a", "android.intent.action.VIEW",
@@ -1121,7 +1125,7 @@ func openPath(path string) (string, error) {
 		s := string(out)
 		log.Printf("openPath dir %s => err=%v out=%q", p, e, strings.TrimSpace(s))
 		if e == nil && !strings.Contains(s, "Error") && !strings.Contains(s, "does not exist") {
-			return "Oke, folder dibuka: " + p, nil
+			return "好，已打开文件夹：" + p, nil
 		}
 		return listDir(p)
 	}
@@ -1133,7 +1137,7 @@ func openPath(path string) (string, error) {
 	if e != nil || strings.Contains(s, "Error") || strings.Contains(s, "does not exist") {
 		return "", fmt.Errorf("gagal membuka %s: %s", p, strings.TrimSpace(s))
 	}
-	return "Oke, file dibuka: " + p, nil
+	return "好，已打开文件：" + p, nil
 }
 
 func webSearch(q string) (string, error) {
@@ -1151,7 +1155,7 @@ func shellAllowed() bool {
 func runShell(cmd string) (string, error) {
 	cmd = strings.TrimSpace(cmd)
 	if cmd == "" {
-		return "", fmt.Errorf("perintah kosong")
+		return "", fmt.Errorf("命令为空")
 	}
 	if !shellAllowed() {
 		return "", fmt.Errorf("akses shell dimatikan (set \"allow_shell\": true di config.json)")
@@ -1166,7 +1170,7 @@ func runShell(cmd string) (string, error) {
 	}
 	if ctx.Err() == context.DeadlineExceeded {
 		if s == "" {
-			s = "tidak ada output"
+			s = "（无输出）"
 		}
 		return s + "\n(timeout 60s)", nil
 	}
@@ -1174,7 +1178,7 @@ func runShell(cmd string) (string, error) {
 		return "", fmt.Errorf("gagal: %v", err)
 	}
 	if s == "" {
-		s = "(perintah selesai, tanpa output)"
+		s = "（命令执行完成，无输出）"
 	}
 	return s, nil
 }
@@ -1624,7 +1628,7 @@ func execToolInner(name string, args map[string]interface{}) string {
 		log.Printf("[tool] screenshot")
 		return resultOrErr(screenshotTool(str("path")))
 	default:
-		return "aksi tidak dikenal: " + name
+		return "未知操作: " + name
 	}
 }
 
@@ -1697,7 +1701,7 @@ func shellQuote(s string) string {
 func writeFile(path, content string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return "", fmt.Errorf("path kosong")
+		return "", fmt.Errorf("路径为空")
 	}
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		os.MkdirAll(dir, 0755)
@@ -1711,7 +1715,7 @@ func writeFile(path, content string) (string, error) {
 func readFile(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return "", fmt.Errorf("path kosong")
+		return "", fmt.Errorf("路径为空")
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -1754,10 +1758,10 @@ func listDir(path string) (string, error) {
 func makeDir(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return "", fmt.Errorf("path kosong")
+		return "", fmt.Errorf("路径为空")
 	}
 	if err := os.MkdirAll(path, 0755); err != nil {
-		return "", fmt.Errorf("gagal buat folder %s: %v", path, err)
+		return "", fmt.Errorf("创建目录失败 %s: %v", path, err)
 	}
 	return "Folder dibuat: " + path, nil
 }
@@ -1766,7 +1770,7 @@ func moveFile(from, to string) (string, error) {
 	from = strings.TrimSpace(from)
 	to = strings.TrimSpace(to)
 	if from == "" || to == "" {
-		return "", fmt.Errorf("path sumber/tujuan kosong")
+		return "", fmt.Errorf("源路径或目标路径为空")
 	}
 	if err := os.MkdirAll(filepath.Dir(to), 0755); err != nil {
 		_ = err
@@ -1783,7 +1787,7 @@ func moveFile(from, to string) (string, error) {
 func deletePath(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return "", fmt.Errorf("path kosong")
+		return "", fmt.Errorf("路径为空")
 	}
 	if err := os.RemoveAll(path); err != nil {
 		return "", fmt.Errorf("gagal hapus %s: %v", path, err)
@@ -1795,7 +1799,7 @@ func downloadURL(url, path string) (string, error) {
 	url = strings.TrimSpace(url)
 	path = strings.TrimSpace(path)
 	if url == "" || path == "" {
-		return "", fmt.Errorf("url/path kosong")
+		return "", fmt.Errorf("url 或路径为空")
 	}
 	if !strings.Contains(url, "://") {
 		url = "https://" + url
@@ -1872,7 +1876,7 @@ func slashCommand(text string) (string, bool) {
 		}
 	case "/sh", "/shell", "/su":
 		if arg == "" {
-			return "Format: /sh <perintah>  contoh: /sh df -h", true
+			return "格式：/sh <命令>  例如 /sh df -h", true
 		}
 		if msg, err := runShell(arg); err != nil {
 			return err.Error(), true
@@ -2209,7 +2213,8 @@ func openAIAgent(model string, msgs []Msg) (string, int, string, error) {
 			})
 		}
 	}
-	return "Maaf, tugasnya butuh terlalu banyak langkah. Coba pecah jadi perintah yang lebih kecil.", 200, "", nil
+	return "我已经连续执行了 24 步，达到单次上限。任务可能还没做完 —— " +
+		"直接说「继续」我就接着往下做，或者把范围缩小一点（比如一次只处理一个 App）。", 200, "", nil
 }
 
 func callOpenAI(msgs []Msg) (string, error) {
@@ -2267,36 +2272,36 @@ func openAIToolDecls() []interface{} {
 	}
 	funcs := []interface{}{
 		add("open_app",
-			"Buka (launch) sebuah aplikasi di HP pengguna berdasarkan namanya (mis. WhatsApp, YouTube, Instagram) atau nama package (mis. com.whatsapp).",
-			map[string]interface{}{"app": prop("string", "nama aplikasi atau nama package")},
+			"按名称打开手机上的应用（如 微信、网易云音乐），也可以直接给包名（如 com.tencent.mm）。",
+			map[string]interface{}{"app": prop("string", "应用名或包名")},
 			[]string{"app"}),
 		add("open_url",
-			"Buka sebuah URL/tautan di browser HP pengguna. Tambahkan https:// bila tidak ada.",
-			map[string]interface{}{"url": prop("string", "URL yang akan dibuka")},
+			"在手机浏览器里打开一个网址。如果没有写协议，自动补 https://。",
+			map[string]interface{}{"url": prop("string", "要打开的网址")},
 			[]string{"url"}),
 		add("web_search",
-			"Cari sesuatu di Google dan buka hasil pencariannya di browser HP.",
-			map[string]interface{}{"query": prop("string", "kata kunci pencarian")},
+			"用 Google 搜索，并在浏览器里打开结果页。",
+			map[string]interface{}{"query": prop("string", "搜索关键词")},
 			[]string{"query"}),
 	}
 	if shellAllowed() {
 		funcs = append(funcs, add("run_shell",
-			"Jalankan perintah shell di HP pengguna (root) dan kembalikan output. "+
-				"Pakai HANYA saat pengguna minta menjalankan perintah/shell, cek sistem, kelola file, atau tugas teknis. "+
-				"Contoh: 'cek storage', 'list file Download', 'sisa baterai', 'pm list packages | grep wa'.",
-			map[string]interface{}{"command": prop("string", "perintah shell yang dijalankan via sh -c")},
+			"以 root 身份在手机上执行 shell 命令并返回输出。"+
+				"用于查看系统信息、批量处理文件、修改设置、读取通知库等。"+
+				"例如：'df -h'、'ls -l /sdcard/Download'、'dumpsys battery'。",
+			map[string]interface{}{"command": prop("string", "要通过 sh -c 执行的命令")},
 			[]string{"command"}))
 	}
 	funcs = append(funcs,
-		add("write_file", "Tulis/buat file baru di HP (menimpa bila sudah ada); folder induk dibuat otomatis. Gunakan path absolut, mis. /storage/emulated/0/Download/note.txt.", map[string]interface{}{"path": prop("string", "path absolut file"), "content": prop("string", "isi file")}, []string{"path", "content"}),
-		add("read_file", "Baca isi sebuah file teks di HP. Gunakan path absolut.", map[string]interface{}{"path": prop("string", "path absolut file")}, []string{"path"}),
-		add("list_dir", "Tampilkan daftar file/folder pada sebuah direktori di HP.", map[string]interface{}{"path": prop("string", "path direktori, mis. /storage/emulated/0/Download")}, []string{"path"}),
-		add("make_dir", "Buat folder (beserta folder induknya) di HP.", map[string]interface{}{"path": prop("string", "path folder")}, []string{"path"}),
-		add("move_file", "Pindahkan atau ganti nama file/folder di HP.", map[string]interface{}{"from": prop("string", "path sumber"), "to": prop("string", "path tujuan")}, []string{"from", "to"}),
-		add("delete_path", "Hapus file atau folder di HP.", map[string]interface{}{"path": prop("string", "path yang akan dihapus")}, []string{"path"}),
-		add("download_url", "Unduh file dari internet lalu simpan ke path di HP.", map[string]interface{}{"url": prop("string", "URL file yang diunduh"), "path": prop("string", "path tujuan penyimpanan")}, []string{"url", "path"}),
-		add("open_path", "Buka sebuah FILE atau FOLDER di HP dengan aplikasi penampil/pengelola bawaan. Pakai untuk permintaan seperti 'buka file catatan.txt', 'buka folder Download', 'buka foto/video/musik'. BUKAN untuk aplikasi; untuk aplikasi pakai open_app.", map[string]interface{}{"path": prop("string", "path absolut file atau folder")}, []string{"path"}),
-		add("schedule_message", "Jadwalkan PESAN OTOMATIS dari agent ke pengguna setelah jeda waktu tertentu (pengingat/reminder). Agent mengirim pesan ini sendiri tanpa ditanya lagi. Pakai saat pengguna minta diingatkan sesuatu, mis. 'ingetin 10 menit lagi minum obat'.", map[string]interface{}{"delay_seconds": prop("integer", "jeda waktu dalam detik sebelum pesan dikirim"), "message": prop("string", "isi pesan pengingat yang akan dikirim nanti")}, []string{"delay_seconds", "message"}),
+		add("write_file", "写入或新建文件（已存在则覆盖），父目录会自动创建。必须用绝对路径，如 /storage/emulated/0/Download/note.txt。", map[string]interface{}{"path": prop("string", "文件的绝对路径"), "content": prop("string", "文件内容")}, []string{"path", "content"}),
+		add("read_file", "读取一个文本文件的内容。使用绝对路径。", map[string]interface{}{"path": prop("string", "文件的绝对路径")}, []string{"path"}),
+		add("list_dir", "列出某个目录下的文件和文件夹。", map[string]interface{}{"path": prop("string", "目录路径，如 /storage/emulated/0/Download")}, []string{"path"}),
+		add("make_dir", "创建目录（父目录会一并创建）。", map[string]interface{}{"path": prop("string", "目录路径")}, []string{"path"}),
+		add("move_file", "移动或重命名文件/文件夹。", map[string]interface{}{"from": prop("string", "源路径"), "to": prop("string", "目标路径")}, []string{"from", "to"}),
+		add("delete_path", "删除文件或文件夹。", map[string]interface{}{"path": prop("string", "要删除的路径")}, []string{"path"}),
+		add("download_url", "从网络下载文件并保存到手机上的指定路径。", map[string]interface{}{"url": prop("string", "要下载的文件地址"), "path": prop("string", "保存路径")}, []string{"url", "path"}),
+		add("open_path", "用系统的默认应用打开一个文件或文件夹。适用于「打开 catatan.txt」「打开 Download 文件夹」「打开这张图片」这类请求。注意：打开应用请用 open_app，不要用这个。", map[string]interface{}{"path": prop("string", "文件或目录的绝对路径")}, []string{"path"}),
+		add("schedule_message", "安排一条定时提醒：到点后 agent 会主动把这条消息发给你。当用户说「10 分钟后提醒我吃药」时使用。", map[string]interface{}{"delay_seconds": prop("integer", "多少秒后发送（延迟秒数）"), "message": prop("string", "到点要发送的提醒内容")}, []string{"delay_seconds", "message"}),
 		// ---- UI 自动化：让 agent 真正能操作界面，而不只是开关 App ----
 		add("screen", "读取当前界面结构，返回带中心坐标的可点节点列表。需要看界面、找按钮、确认上一步操作是否生效时，优先用这个，比截图省大量 token。", map[string]interface{}{}, []string{}),
 		add("tap", "点击屏幕坐标。坐标必须来自 screen 返回的 @(x,y)，不要自己估算。duration_ms>=400 视为长按。", map[string]interface{}{"x": prop("integer", "横坐标"), "y": prop("integer", "纵坐标"), "duration_ms": prop("integer", "按住时长毫秒，默认 80；>=400 为长按")}, []string{"x", "y"}),
@@ -2350,12 +2355,23 @@ func parseSuggestions(reply string) (string, []string) {
 	for _, ln := range lines {
 		t := strings.TrimSpace(ln)
 		up := strings.ToUpper(t)
-		if strings.HasPrefix(up, "SARAN:") || strings.HasPrefix(up, "SARAN :") ||
-			strings.HasPrefix(up, "SUGGEST:") || strings.HasPrefix(up, "SARAN-") {
-			rest := t[strings.Index(t, ":")+1:]
-			rest = strings.TrimPrefix(rest, "-")
+		// 模型可能用半角/全角冒号，也可能直接写「建议：」，都认。
+		// 漏认的后果是整行留在正文里，同时 chips 又由兜底逻辑补一份，重复显示。
+		isSugg := strings.HasPrefix(up, "SARAN") || strings.HasPrefix(up, "SUGGEST") ||
+			strings.HasPrefix(t, "建议")
+		if isSugg {
+			idx := strings.IndexAny(t, ":：")
+			if idx < 0 {
+				// 形如 "SARAN-xxx" 的写法
+				if i := strings.Index(t, "-"); i > 0 {
+					idx = i
+				} else {
+					continue
+				}
+			}
+			rest := strings.TrimPrefix(t[idx+1:], "-")
 			for _, part := range strings.Split(rest, "|") {
-				p := strings.TrimSpace(strings.Trim(strings.TrimSpace(part), "\"'"))
+				p := strings.TrimSpace(strings.Trim(strings.TrimSpace(part), "\"'“”"))
 				if p != "" {
 					sugg = append(sugg, p)
 				}
@@ -2383,23 +2399,23 @@ func defaultSuggestions(actions []string) []string {
 	}
 	switch {
 	case has("download_url"):
-		return []string{"Buka file hasil unduhan", "Lihat folder Download", "Cek sisa storage"}
+		return []string{"打开刚下载的文件", "看看 Download 文件夹", "查看剩余存储"}
 	case has("open_app"):
-		return []string{"Buka WhatsApp", "Cek sisa storage", "Lihat folder Download"}
+		return []string{"打开微信", "查看剩余存储", "看看 Download 文件夹"}
 	case has("open_path"), has("list_dir"):
-		return []string{"Lihat isi folder", "Buka file lain", "Cek sisa storage"}
+		return []string{"看看目录里的内容", "打开别的文件", "查看剩余存储"}
 	case has("write_file"), has("make_dir"):
-		return []string{"Baca file itu", "Lihat folder Download", "Cek sisa storage"}
+		return []string{"读一下那个文件", "看看 Download 文件夹", "查看剩余存储"}
 	case has("run_shell"):
-		return []string{"Jalankan perintah lain", "Cek sisa storage", "Lihat folder Download"}
+		return []string{"再执行一条命令", "查看剩余存储", "看看 Download 文件夹"}
 	case has("web_search"):
-		return []string{"Buka hasil pertama", "Cari hal lain", "Cek sisa storage"}
+		return []string{"打开第一个结果", "搜点别的", "查看剩余存储"}
 	case has("open_url"):
-		return []string{"Cari hal lain", "Buka YouTube", "Cek sisa storage"}
+		return []string{"搜点别的", "打开哔哩哔哩", "查看剩余存储"}
 	case has("schedule_message"):
-		return []string{"Buat pengingat lain", "Buka aplikasi pengingat", "Cek sisa storage"}
+		return []string{"再设一个提醒", "打开提醒事项", "查看剩余存储"}
 	}
-	return []string{"Cek sisa storage", "Lihat folder Download", "Buka WhatsApp"}
+	return []string{"查看剩余存储", "看看 Download 文件夹", "打开微信"}
 }
 
 // fallbackAck memberi konfirmasi singkat saat model tidak menulis teks (hanya SARAN).
@@ -2407,24 +2423,24 @@ func fallbackAck(actions []string) string {
 	for _, a := range actions {
 		switch a {
 		case "schedule_message":
-			return "Siap, pengingat sudah dijadwalkan."
+			return "好，提醒已设好。"
 		case "open_app":
-			return "Siap, sudah dibuka."
+			return "好，已打开。"
 		case "open_url":
-			return "Siap, sudah dibuka di browser."
+			return "好，已在浏览器里打开。"
 		case "download_url":
-			return "Siap, unduhan selesai."
+			return "好，下载完成。"
 		case "write_file":
-			return "Siap, file sudah dibuat."
+			return "好，文件已创建。"
 		case "delete_path":
-			return "Siap, sudah dihapus."
+			return "好，已删除。"
 		case "move_file":
-			return "Siap, sudah dipindahkan."
+			return "好，已移动。"
 		case "run_shell":
-			return "Siap, perintah sudah dijalankan."
+			return "好，命令已执行。"
 		}
 	}
-	return "Siap, sudah saya kerjakan."
+	return "好，已完成。"
 }
 
 func handleChat(w http.ResponseWriter, r *http.Request) {
