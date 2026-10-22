@@ -71,7 +71,7 @@
 <header>
   <span class="dot" id="dot"></span>
   <h1>ZafxyrAgent AI</h1>
-  <button id="reset" type="button">Reset</button>
+  <button id="reset" type="button">清空</button>
 </header>
 <div id="hint">
   Contoh: “buka WhatsApp” · “cek sisa storage” · “list file di Download” · “buka google.com”
@@ -79,9 +79,9 @@
 <div id="log"></div>
 <div id="chips"></div>
 <form id="f">
-  <select id="model" title="Pilih model AI"></select>
-  <textarea id="q" rows="1" placeholder="Tanya apa saja..." autocomplete="off"></textarea>
-  <button id="send" type="submit">Kirim</button>
+  <select id="model" title="选择模型"></select>
+  <textarea id="q" rows="1" placeholder="让它做什么？例如：打开微信，给张三发消息" autocomplete="off"></textarea>
+  <button id="send" type="submit">发送</button>
 </form>
 <script>
 const log = document.getElementById('log');

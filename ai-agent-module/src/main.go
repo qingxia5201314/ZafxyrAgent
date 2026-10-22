@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	_ "embed"
 	"encoding/json"
+	"encoding/xml"
 	"flag"
 	"fmt"
 	"io"
@@ -219,12 +220,15 @@ func loadConfig() {
 	p := filepath.Join(modDir, "config.json")
 	b, err := os.ReadFile(p)
 	if err != nil {
-		log.Printf("config read error: %v", err)
-		return
-	}
-	cfg.AutoOpen = true
-	if err := json.Unmarshal(b, &cfg); err != nil {
-		log.Printf("config parse error: %v", err)
+		// 原来这里直接 return，导致配置缺失时所有默认值都不生效
+		// （最明显的后果：Port 保持 0，服务绑到随机端口，用户完全连不上）。
+		// 改成记一条日志后继续走默认值。
+		log.Printf("config read error: %v（继续使用默认配置）", err)
+	} else {
+		cfg.AutoOpen = true
+		if err := json.Unmarshal(b, &cfg); err != nil {
+			log.Printf("config parse error: %v", err)
+		}
 	}
 	prov := strings.ToLower(strings.TrimSpace(cfg.Provider))
 	switch prov {
@@ -277,14 +281,28 @@ func loadConfig() {
 		}
 	}
 	if cfg.System == "" {
-		cfg.System = "You are an autonomous AI AGENT running as root on the user's Android phone (Indonesian user). " +
-			"You act on the phone ONLY by calling tools/functions. " +
-			"RULE 1: You CANNOT do anything by writing text - to open an app, write/read/move/delete files, run commands, you MUST call the matching tool; never claim an action is done unless you actually called the tool. " +
-			"RULE 2: The word 'buka' is CONTEXTUAL - decide the target: a file/folder/path -> open_path, a web link -> open_url, an installed app name -> open_app. Do NOT assume 'buka' always means an app. " +
-			"RULE 3: Chain multiple tool calls until the task is finished (e.g. make_dir -> write_file -> read_file), then summarize briefly. " +
-			"Tools: open_app (app), open_path (file/folder), open_url, web_search, run_shell (root), write_file, read_file, list_dir, make_dir, move_file, delete_path, download_url, schedule_message (auto reminder after N seconds; use delay_seconds). " +
-			"Default save location: /storage/emulated/0/Download. Always use absolute paths. Reply concisely in Indonesian. " +
-			"FINALLY: on the very last line of every answer, add exactly one line starting with 'SARAN:' followed by 2-4 short follow-up actions the user may want next, separated by ' | ' (Bahasa Indonesia, no quotes). Example: 'SARAN: Buka file hasil unduhan | Lihat folder Download | Cek sisa storage'."
+		cfg.System = "你是一个运行在 Android 手机上的 AI agent，以 root 权限操作这台设备。始终用中文回复。\n\n" +
+			"## 核心规则\n" +
+			"1. 你不能靠「说」完成任何事。要打开东西、点按钮、输入文字、跑命令，必须调用对应工具。" +
+			"没调用工具、没拿到工具结果，就不许说已完成。\n" +
+			"2. 操作界面的标准循环：screen（看界面，拿到带坐标的节点）-> tap(该节点的 @x,@y) -> screen（确认界面变了）。" +
+			"坐标只能用 screen 返回的值，不要自己估算。\n" +
+			"3. 界面没变化就是操作失败：可能点偏了、被弹窗挡住、或页面还在加载。先 screen 看清楚，必要时 swipe 滚动找元素。\n\n" +
+			"## 工具选择\n" +
+			"- 打开 App -> open_app；打开文件/文件夹 -> open_path；打开网址 -> open_url\n" +
+			"- 看界面 -> screen（首选，省 token）；界面是纯图形、screen 拿不到内容 -> screenshot\n" +
+			"- 点击 -> tap；长按 -> tap 带 duration_ms>=400；滚动/翻页 -> swipe；返回/主页/回车 -> key\n" +
+			"- 输入文字 -> text（会优先走 ADBKeyboard 以支持中文）\n" +
+			"- 系统信息、批量文件、改设置 -> run_shell\n\n" +
+			"## 中文输入的现实限制\n" +
+			"Android 的 input text 只稳定支持 ASCII，中文要靠 ADBKeyboard。" +
+			"如果 text 返回的提示说中文可能失败，就如实告诉用户结果并建议装 ADBKeyboard 或改用英文，不要假装成功。\n\n" +
+			"## 危险操作\n" +
+			"删除文件、卸载应用、改系统设置、发消息、付款这类不可逆或涉及用户数据的操作：" +
+			"先在回复里说清楚你要做什么，等用户确认后再执行。\n\n" +
+			"默认保存目录 /storage/emulated/0/Download，一律用绝对路径。\n\n" +
+			"最后一行固定输出：以 'SARAN:' 开头，给 2-4 个后续动作，用 ' | ' 分隔。" +
+			"例：SARAN: 打开微信 | 看看电池 | 清一下 Download"
 	}
 }
 
@@ -347,6 +365,13 @@ func notify(title, text, url string) {
 	if url == "" {
 		return
 	}
+	// App 没装就直接放弃。否则 am start 会连试 30 次 × 4 秒把日志刷满
+	// （模块还在但 app 被卸载是很常见的情况）。
+	if out, err := exec.Command("pm", "list", "packages", "com.zafxyra.agent").Output(); err != nil ||
+		!strings.Contains(string(out), "com.zafxyra.agent") {
+		log.Printf("notify skipped: com.zafxyra.agent 未安装")
+		return
+	}
 	// Jaga-jaga: pastikan app boleh posting notif (bisa ke-reset setelah reinstall)
 	for _, g := range [][]string{
 		{"pm", "grant", "com.zafxyra.agent", "android.permission.POST_NOTIFICATIONS"},
@@ -355,8 +380,9 @@ func notify(title, text, url string) {
 	} {
 		exec.Command(g[0], g[1:]...).Run()
 	}
-	// Retry: PMS/user belum siap tepat setelah boot ('Activity class does not exist')
-	for i := 0; i < 30; i++ {
+	// Retry: PMS/user belum siap tepat setelah boot ('Activity class does not exist').
+	// 次数收敛到 8 次、间隔递增，不再无限刷。
+	for i := 0; i < 8; i++ {
 		out, err := exec.Command("am", "start", "-n", "com.zafxyra.agent/.MainActivity",
 			"--es", "url", url, "--ez", "boot", "true").CombinedOutput()
 		s := string(out)
@@ -364,7 +390,7 @@ func notify(title, text, url string) {
 			return
 		}
 		log.Printf("am start attempt %d: %s", i+1, strings.TrimSpace(s))
-		time.Sleep(4 * time.Second)
+		time.Sleep(time.Duration(2+i) * time.Second)
 	}
 }
 
@@ -635,6 +661,13 @@ func toolDecls() []interface{} {
 		gemTool("download_url", "Unduh file dari internet lalu simpan ke path di HP.", map[string]interface{}{"url": gemStr("URL file yang diunduh"), "path": gemStr("path tujuan penyimpanan")}, []string{"url", "path"}),
 		gemTool("open_path", "Buka sebuah FILE atau FOLDER di HP dengan aplikasi penampil/pengelola bawaan. Pakai untuk permintaan seperti 'buka file catatan.txt', 'buka folder Download', 'buka foto/video/musik'. BUKAN untuk aplikasi; untuk aplikasi pakai open_app.", map[string]interface{}{"path": gemStr("path absolut file atau folder, mis. /storage/emulated/0/Download/catatan.txt")}, []string{"path"}),
 		gemTool("schedule_message", "Jadwalkan PESAN OTOMATIS dari agent ke pengguna setelah jeda waktu tertentu (pengingat/reminder). Agent mengirim pesan ini sendiri tanpa ditanya lagi. Pakai saat pengguna minta diingatkan sesuatu, mis. 'ingetin 10 menit lagi minum obat'.", map[string]interface{}{"delay_seconds": map[string]interface{}{"type": "INTEGER", "description": "jeda waktu dalam detik sebelum pesan dikirim"}, "message": gemStr("isi pesan pengingat yang akan dikirim nanti")}, []string{"delay_seconds", "message"}),
+		// ---- UI 自动化：让 agent 真正能操作界面，而不只是开关 App ----
+		gemTool("screen", "读取当前界面结构，返回带中心坐标的可点节点列表。需要看界面、找按钮、确认上一步操作是否生效时，优先用这个，比截图省大量 token。", map[string]interface{}{}, []string{}),
+		gemTool("tap", "点击屏幕坐标。坐标必须来自 screen 返回的 @(x,y)，不要自己估算。duration_ms>=400 视为长按。", map[string]interface{}{"x": map[string]interface{}{"type": "INTEGER", "description": "横坐标"}, "y": map[string]interface{}{"type": "INTEGER", "description": "纵坐标"}, "duration_ms": map[string]interface{}{"type": "INTEGER", "description": "按住时长毫秒，默认 80；>=400 为长按"}}, []string{"x", "y"}),
+		gemTool("swipe", "在屏幕上滑动，用于滚动列表、翻页、下拉通知栏。", map[string]interface{}{"x1": map[string]interface{}{"type": "INTEGER", "description": "起点横坐标"}, "y1": map[string]interface{}{"type": "INTEGER", "description": "起点纵坐标"}, "x2": map[string]interface{}{"type": "INTEGER", "description": "终点横坐标"}, "y2": map[string]interface{}{"type": "INTEGER", "description": "终点纵坐标"}, "duration_ms": map[string]interface{}{"type": "INTEGER", "description": "滑动时长毫秒，默认 300"}}, []string{"x1", "y1", "x2", "y2"}),
+		gemTool("key", "发送按键事件，用于返回、回到主页、回车、删除等。", map[string]interface{}{"key": gemStr("HOME/BACK/ENTER/POWER/TAB/DEL/MENU/RECENT/VOLUP/VOLDOWN，或数字 keycode")}, []string{"key"}),
+		gemTool("text", "向当前聚焦的输入框输入文字。会优先走 ADBKeyboard 以正确支持中文；没装则降级为 input text（中文可能丢失）。", map[string]interface{}{"text": gemStr("要输入的文字")}, []string{"text"}),
+		gemTool("screenshot", "截屏保存为 PNG 文件并返回路径。只在 screen 看不出内容（纯图形界面）时才用。", map[string]interface{}{"path": gemStr("保存路径，留空则存到 /storage/emulated/0/Download")}, []string{}),
 	)
 	return []interface{}{
 		map[string]interface{}{"functionDeclarations": funcs},
@@ -829,8 +862,8 @@ var commonDirs = map[string]string{
 var fileExtMime = map[string]string{
 	"txt": "text/plain", "md": "text/plain", "log": "text/plain", "json": "application/json",
 	"csv": "text/csv", "xml": "text/xml", "html": "text/html", "htm": "text/html",
-	"pdf":  "application/pdf",
-	"jpg":  "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif",
+	"pdf": "application/pdf",
+	"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif",
 	"webp": "image/webp", "bmp": "image/bmp", "svg": "image/svg+xml", "heic": "image/heic",
 	"mp3": "audio/mpeg", "wav": "audio/x-wav", "m4a": "audio/mp4", "ogg": "audio/ogg",
 	"flac": "audio/flac", "aac": "audio/aac",
@@ -988,6 +1021,283 @@ func runShell(cmd string) (string, error) {
 	return s, nil
 }
 
+// ==================== UI 自动化 ====================
+//
+// 这一组工具让 agent 能"看见"并"操作"界面，而不只是开关 App。
+// 全部基于 Android 自带的 uiautomator / input / screencap，零第三方依赖。
+//
+// 设计取舍：
+//   - 用 uiautomator dump 拿 UI 树而不是截图，token 便宜一个数量级，
+//     而且能直接拿到可点坐标，模型不用"看图猜位置"。
+//   - 所有坐标都从 bounds 算中心点，模型只需照抄，降低点偏的概率。
+
+const uiDumpPath = "/data/local/tmp/.agentd_ui.xml"
+
+type uiNodeXML struct {
+	Text       string      `xml:"text,attr"`
+	Desc       string      `xml:"content-desc,attr"`
+	Class      string      `xml:"class,attr"`
+	Package    string      `xml:"package,attr"`
+	Clickable  string      `xml:"clickable,attr"`
+	Scrollable string      `xml:"scrollable,attr"`
+	Enabled    string      `xml:"enabled,attr"`
+	Bounds     string      `xml:"bounds,attr"`
+	Nodes      []uiNodeXML `xml:"node"`
+}
+
+// parseBounds 解析 uiautomator 的坐标串 "[x1,y1][x2,y2]"。
+// 解析不完整时返回全零 + false，避免调用方误用到半截坐标。
+func parseBounds(s string) (x1, y1, x2, y2 int, ok bool) {
+	var a, b, c, d int
+	n, err := fmt.Sscanf(s, "[%d,%d][%d,%d]", &a, &b, &c, &d)
+	if err != nil || n != 4 {
+		return 0, 0, 0, 0, false
+	}
+	return a, b, c, d, true
+}
+
+// currentWindow 取当前焦点窗口。纯辅助信息，失败就当没有。
+func currentWindow() string {
+	out, err := exec.Command("sh", "-c",
+		"dumpsys window 2>/dev/null | grep -E 'mCurrentFocus|mFocusedApp' | head -2").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	s := strings.TrimSpace(string(out))
+	if len(s) > 300 {
+		s = s[:300]
+	}
+	return s
+}
+
+// uiDumpXML 导出 UI XML。优先 --compressed（实测体积降 60%），不支持则回退。
+func uiDumpXML() ([]byte, error) {
+	_ = exec.Command("sh", "-c", "rm -f "+uiDumpPath).Run()
+
+	try := func(flagArg string) bool {
+		_ = exec.Command("sh", "-c",
+			"uiautomator dump "+flagArg+" "+uiDumpPath+" >/dev/null 2>&1").Run()
+		st, err := os.Stat(uiDumpPath)
+		return err == nil && st.Size() > 0
+	}
+	if !try("--compressed") && !try("") {
+		return nil, fmt.Errorf("uiautomator dump 失败：界面可能是 FLAG_SECURE，或系统的自动化服务被限制")
+	}
+	data, err := os.ReadFile(uiDumpPath)
+	_ = os.Remove(uiDumpPath)
+	if err != nil {
+		return nil, fmt.Errorf("读取 dump 结果失败: %v", err)
+	}
+	return data, nil
+}
+
+// parseUILines 把 uiautomator 的 XML 拍平成「文字 + 中心坐标」的行。
+// 单独抽出来是为了能脱离设备做单元测试。
+func parseUILines(data []byte) ([]string, error) {
+	var root uiNodeXML
+	if err := xml.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("解析 UI XML 失败: %v", err)
+	}
+
+	var lines []string
+	var walk func(n uiNodeXML, depth int)
+	walk = func(n uiNodeXML, depth int) {
+		label := strings.TrimSpace(n.Text)
+		if label == "" {
+			label = strings.TrimSpace(n.Desc)
+		}
+		if label != "" && depth < 48 {
+			if x1, y1, x2, y2, ok := parseBounds(n.Bounds); ok {
+				cls := n.Class
+				if i := strings.LastIndex(cls, "."); i >= 0 {
+					cls = cls[i+1:]
+				}
+				var flags []string
+				if n.Clickable == "true" {
+					flags = append(flags, "可点")
+				}
+				if n.Scrollable == "true" {
+					flags = append(flags, "可滚")
+				}
+				if n.Enabled == "false" {
+					flags = append(flags, "禁用")
+				}
+				label = strings.ReplaceAll(strings.ReplaceAll(label, "\n", " "), "\r", "")
+				lines = append(lines, fmt.Sprintf("[%d] %s @(%d,%d) %s %s",
+					len(lines)+1, truncate(label, 60), (x1+x2)/2, (y1+y2)/2,
+					cls, strings.Join(flags, " ")))
+			}
+		}
+		for _, c := range n.Nodes {
+			walk(c, depth+1)
+		}
+	}
+	walk(root, 0)
+	return lines, nil
+}
+
+// screenTool 返回紧凑的界面结构：每个带文字的节点一行，附中心坐标。
+func screenTool() (string, error) {
+	data, err := uiDumpXML()
+	if err != nil {
+		return "", err
+	}
+	lines, err := parseUILines(data)
+	if err != nil {
+		return "", err
+	}
+
+	win := currentWindow()
+	head := ""
+	if win != "" {
+		head = "当前窗口: " + win + "\n\n"
+	}
+	if len(lines) == 0 {
+		return head + "(界面里没有带文字的可点节点：可能是 FLAG_SECURE 界面，或纯图形绘制)", nil
+	}
+	if len(lines) > 90 {
+		total := len(lines)
+		lines = append(lines[:90], fmt.Sprintf("…还有 %d 个节点未显示", total-90))
+	}
+	return head + strings.Join(lines, "\n"), nil
+}
+
+func tapTool(x, y, durMs int) (string, error) {
+	if x < 0 || y < 0 || x > 20000 || y > 20000 {
+		return "", fmt.Errorf("坐标不合理: (%d,%d)", x, y)
+	}
+	var cmd string
+	if durMs >= 400 {
+		cmd = fmt.Sprintf("input swipe %d %d %d %d %d", x, y, x, y, durMs)
+	} else {
+		cmd = fmt.Sprintf("input tap %d %d", x, y)
+	}
+	if out, err := exec.Command("sh", "-c", cmd).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("点击失败: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	if durMs >= 400 {
+		return fmt.Sprintf("已长按 (%d,%d) %dms", x, y, durMs), nil
+	}
+	return fmt.Sprintf("已点击 (%d,%d)", x, y), nil
+}
+
+func swipeTool(x1, y1, x2, y2, durMs int) (string, error) {
+	if durMs <= 0 {
+		durMs = 300
+	}
+	cmd := fmt.Sprintf("input swipe %d %d %d %d %d", x1, y1, x2, y2, durMs)
+	if out, err := exec.Command("sh", "-c", cmd).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("滑动失败: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return fmt.Sprintf("已滑动 (%d,%d) -> (%d,%d) %dms", x1, y1, x2, y2, durMs), nil
+}
+
+var keyNames = map[string]string{
+	"HOME": "3", "BACK": "4", "ENTER": "66", "POWER": "26", "TAB": "61",
+	"DEL": "67", "BACKSPACE": "67", "MENU": "82", "SEARCH": "84",
+	"RECENT": "187", "APP_SWITCH": "187", "SPACE": "62", "CAMERA": "27",
+	"WAKEUP": "224", "SLEEP": "223", "MUTE": "164", "PLAYPAUSE": "85",
+	"VOLUP": "24", "VOLDOWN": "25", "UP": "19", "DOWN": "20",
+	"LEFT": "21", "RIGHT": "22", "CENTER": "23",
+}
+
+func keyTool(k string) (string, error) {
+	k = strings.TrimSpace(k)
+	if k == "" {
+		return "", fmt.Errorf("缺少按键名")
+	}
+	code := k
+	if v, ok := keyNames[strings.ToUpper(k)]; ok {
+		code = v
+	}
+	// 只接受纯数字，杜绝把用户输入拼进 shell
+	if _, err := strconv.Atoi(code); err != nil {
+		return "", fmt.Errorf("未知按键: %s（可用 HOME/BACK/ENTER/POWER/TAB/或数字 keycode）", k)
+	}
+	if out, err := exec.Command("sh", "-c", "input keyevent "+code).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("按键失败: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return "已按键 " + strings.ToUpper(k) + " (" + code + ")", nil
+}
+
+var (
+	adbKbOnce sync.Once
+	adbKbOK   bool
+)
+
+// hasADBKeyboard 检测有没有装 ADBKeyboard（能可靠输入任意 UTF-8 的输入法）。
+func hasADBKeyboard() bool {
+	adbKbOnce.Do(func() {
+		out, _ := exec.Command("sh", "-c",
+			"pm list packages 2>/dev/null | grep -q com.android.adbkeyboard && echo yes").CombinedOutput()
+		adbKbOK = strings.TrimSpace(string(out)) == "yes"
+	})
+	return adbKbOK
+}
+
+// textTool 向当前焦点输入文字。
+//
+// 中文是个老问题：Android 的 `input text` 只可靠支持 ASCII。
+// 三级降级：ADBKeyboard 广播（最稳）-> input text（部分 ROM 吃 UTF-8）-> 明确报错提示装 ADBKeyboard。
+func textTool(s string) (string, error) {
+	if s == "" {
+		return "", fmt.Errorf("要输入的文字为空")
+	}
+	ascii := true
+	for _, r := range s {
+		if r < 32 || r > 126 {
+			ascii = false
+			break
+		}
+	}
+
+	if hasADBKeyboard() {
+		q := strings.ReplaceAll(s, `"`, `\"`)
+		cmd := `am broadcast -a ADB_INPUT_TEXT --es msg "` + q + `"`
+		if out, err := exec.Command("sh", "-c", cmd).CombinedOutput(); err == nil {
+			_ = out
+			return "已输入（ADBKeyboard 广播通道）", nil
+		}
+	}
+
+	// shell 单引号内转义：' -> '\''
+	q := strings.ReplaceAll(s, "'", `'\''`)
+	out, err := exec.Command("sh", "-c", "input text '"+q+"'").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("输入失败: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	if !ascii {
+		return "已尝试输入（含非 ASCII 字符）。input text 对中文支持有限，" +
+			"如果输入框里没出现文字，装 ADBKeyboard 后重试，或改用英文。", nil
+	}
+	return "已输入", nil
+}
+
+func screenshotTool(savePath string) (string, error) {
+	if strings.TrimSpace(savePath) == "" {
+		savePath = "/storage/emulated/0/Download/shot_" +
+			time.Now().Format("20060102_150405") + ".png"
+	}
+	savePath = expandPath(savePath)
+
+	tmp := "/data/local/tmp/.agentd_shot.png"
+	_ = exec.Command("sh", "-c", "rm -f "+tmp).Run()
+	if out, err := exec.Command("sh", "-c", "screencap -p "+tmp).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("screencap 失败: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	st, err := os.Stat(tmp)
+	if err != nil || st.Size() == 0 {
+		return "", fmt.Errorf("screencap 没有产生文件（界面可能是 FLAG_SECURE）")
+	}
+	if out, err := exec.Command("sh", "-c",
+		"cp "+tmp+" "+shellQuote(savePath)+" && chmod 0666 "+shellQuote(savePath)).CombinedOutput(); err != nil {
+		_ = os.Remove(tmp)
+		return "", fmt.Errorf("保存到 %s 失败: %v (%s)", savePath, err, strings.TrimSpace(string(out)))
+	}
+	_ = os.Remove(tmp)
+	return fmt.Sprintf("截图已保存: %s (%d KB)", savePath, st.Size()/1024), nil
+}
+
 func resultOrErr(msg string, err error) string {
 	if err != nil {
 		return err.Error()
@@ -1044,6 +1354,28 @@ func toolStatus(name string, args map[string]interface{}) string {
 			return fmt.Sprintf("Menjadwalkan pengingat (%d detik)...", d)
 		}
 		return "Menjadwalkan pengingat..."
+	// ---- UI 自动化 ----
+	case "screen":
+		return "Membaca layar..."
+	case "tap":
+		if x, y := int(numArg(args, "x")), int(numArg(args, "y")); x > 0 || y > 0 {
+			return fmt.Sprintf("Mengetuk (%d,%d)...", x, y)
+		}
+		return "Mengetuk layar..."
+	case "swipe":
+		return "Menggeser layar..."
+	case "key":
+		if k := argStr(args, "key"); k != "" {
+			return "Menekan tombol " + strings.ToUpper(k) + "..."
+		}
+		return "Menekan tombol..."
+	case "text":
+		if t := argStr(args, "text"); t != "" {
+			return "Mengetik \"" + truncate(t, 20) + "\"..."
+		}
+		return "Mengetik..."
+	case "screenshot":
+		return "Mengambil tangkapan layar..."
 	}
 	return ""
 }
@@ -1111,6 +1443,28 @@ func execToolInner(name string, args map[string]interface{}) string {
 		msg := str("message")
 		log.Printf("[tool] schedule_message delay=%ds msg=%q", delay, msg)
 		return scheduleMessage(delay, msg)
+	case "screen":
+		log.Printf("[tool] screen")
+		return resultOrErr(screenTool())
+	case "tap":
+		x, y := int(numArg(args, "x")), int(numArg(args, "y"))
+		log.Printf("[tool] tap (%d,%d)", x, y)
+		return resultOrErr(tapTool(x, y, int(numArg(args, "duration_ms"))))
+	case "swipe":
+		log.Printf("[tool] swipe")
+		return resultOrErr(swipeTool(
+			int(numArg(args, "x1")), int(numArg(args, "y1")),
+			int(numArg(args, "x2")), int(numArg(args, "y2")),
+			int(numArg(args, "duration_ms"))))
+	case "key":
+		log.Printf("[tool] key %q", str("key"))
+		return resultOrErr(keyTool(str("key")))
+	case "text":
+		log.Printf("[tool] text %q", truncate(str("text"), 40))
+		return resultOrErr(textTool(str("text")))
+	case "screenshot":
+		log.Printf("[tool] screenshot")
+		return resultOrErr(screenshotTool(str("path")))
 	default:
 		return "aksi tidak dikenal: " + name
 	}
@@ -1535,7 +1889,7 @@ func openAIStepStream(url string, reqBody map[string]interface{}, onToken func(s
 	reader := bufio.NewReader(resp.Body)
 	var content strings.Builder
 	type acc struct {
-		id  string
+		id   string
 		name string
 		args string
 	}
@@ -1785,6 +2139,13 @@ func openAIToolDecls() []interface{} {
 		add("download_url", "Unduh file dari internet lalu simpan ke path di HP.", map[string]interface{}{"url": prop("string", "URL file yang diunduh"), "path": prop("string", "path tujuan penyimpanan")}, []string{"url", "path"}),
 		add("open_path", "Buka sebuah FILE atau FOLDER di HP dengan aplikasi penampil/pengelola bawaan. Pakai untuk permintaan seperti 'buka file catatan.txt', 'buka folder Download', 'buka foto/video/musik'. BUKAN untuk aplikasi; untuk aplikasi pakai open_app.", map[string]interface{}{"path": prop("string", "path absolut file atau folder")}, []string{"path"}),
 		add("schedule_message", "Jadwalkan PESAN OTOMATIS dari agent ke pengguna setelah jeda waktu tertentu (pengingat/reminder). Agent mengirim pesan ini sendiri tanpa ditanya lagi. Pakai saat pengguna minta diingatkan sesuatu, mis. 'ingetin 10 menit lagi minum obat'.", map[string]interface{}{"delay_seconds": prop("integer", "jeda waktu dalam detik sebelum pesan dikirim"), "message": prop("string", "isi pesan pengingat yang akan dikirim nanti")}, []string{"delay_seconds", "message"}),
+		// ---- UI 自动化：让 agent 真正能操作界面，而不只是开关 App ----
+		add("screen", "读取当前界面结构，返回带中心坐标的可点节点列表。需要看界面、找按钮、确认上一步操作是否生效时，优先用这个，比截图省大量 token。", map[string]interface{}{}, []string{}),
+		add("tap", "点击屏幕坐标。坐标必须来自 screen 返回的 @(x,y)，不要自己估算。duration_ms>=400 视为长按。", map[string]interface{}{"x": prop("integer", "横坐标"), "y": prop("integer", "纵坐标"), "duration_ms": prop("integer", "按住时长毫秒，默认 80；>=400 为长按")}, []string{"x", "y"}),
+		add("swipe", "在屏幕上滑动，用于滚动列表、翻页、下拉通知栏。", map[string]interface{}{"x1": prop("integer", "起点横坐标"), "y1": prop("integer", "起点纵坐标"), "x2": prop("integer", "终点横坐标"), "y2": prop("integer", "终点纵坐标"), "duration_ms": prop("integer", "滑动时长毫秒，默认 300")}, []string{"x1", "y1", "x2", "y2"}),
+		add("key", "发送按键事件，用于返回、回到主页、回车、删除等。", map[string]interface{}{"key": prop("string", "HOME/BACK/ENTER/POWER/TAB/DEL/MENU/RECENT/VOLUP/VOLDOWN，或数字 keycode")}, []string{"key"}),
+		add("text", "向当前聚焦的输入框输入文字。会优先走 ADBKeyboard 以正确支持中文；没装则降级为 input text（中文可能丢失）。", map[string]interface{}{"text": prop("string", "要输入的文字")}, []string{"text"}),
+		add("screenshot", "截屏保存为 PNG 文件并返回路径。只在 screen 看不出内容（纯图形界面）时才用。", map[string]interface{}{"path": prop("string", "保存路径，留空则存到 /storage/emulated/0/Download")}, []string{}),
 	)
 	return funcs
 }
@@ -2046,6 +2407,29 @@ func main() {
 	mux.HandleFunc("/history", handleHistory)
 	mux.HandleFunc("/reset", handleReset)
 	mux.HandleFunc("/events", handleEvents)
+
+	// 调试端点：仅在环境变量 AGENTD_DEBUG=1 时挂载，用于在真机上直接验证工具行为
+	// （不用先配好 LLM 就能测 screen/tap 这些）。默认不存在，不会污染生产环境。
+	if os.Getenv("AGENTD_DEBUG") == "1" {
+		mux.HandleFunc("/debug/tool", func(w http.ResponseWriter, r *http.Request) {
+			name := r.URL.Query().Get("name")
+			if name == "" {
+				http.Error(w, "missing name", http.StatusBadRequest)
+				return
+			}
+			args := map[string]interface{}{}
+			if raw := r.URL.Query().Get("args"); raw != "" {
+				if err := json.Unmarshal([]byte(raw), &args); err != nil {
+					http.Error(w, "bad args json: "+err.Error(), http.StatusBadRequest)
+					return
+				}
+			}
+			log.Printf("[debug] tool=%s args=%v", name, args)
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			fmt.Fprint(w, execToolInner(name, args))
+		})
+		log.Printf("debug endpoint enabled: /debug/tool")
+	}
 
 	addr := fmt.Sprintf("127.0.0.1:%d", cfg.Port)
 	go func() {
