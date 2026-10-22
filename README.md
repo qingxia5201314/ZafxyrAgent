@@ -1,7 +1,6 @@
-# ZafxyrAgent AI
+# ZafxyrAgent AI · 中文加强版
 
-> **Autonomous AI agent yang hidup di root shell HP Android kamu.**
-> Ngobrol pakai bahasa sehari-hari, dan agent benar-benar mengeksekusinya — buka aplikasi, cari file, jalankan perintah root, unduh file, sampai membuat pengingat otomatis.
+> 跑在 root 安卓手机上的本地 AI agent。用日常语言说话，它真的照做——开应用、看屏幕、点按钮、敲字、跑 root 命令、管文件、设提醒。
 
 ![Platform](https://img.shields.io/badge/platform-Android%2014%2B-3ddc84)
 ![Root](https://img.shields.io/badge/root-KernelSU%20%7C%20Magisk%20%7C%20APatch-6b7280)
@@ -9,183 +8,186 @@
 ![UI](https://img.shields.io/badge/UI-WebView-6b7280)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
----
-
-## Apa ini?
-
-**ZafxyrAgent AI** adalah sebuah **KernelSU / Magisk / APatch module** yang menjalankan daemon kecil (ditulis dengan Go) sebagai `root` di dalam HP Android. Daemon ini:
-
-- Menyediakan **web chat UI** ringan (WebView) di `http://127.0.0.1:8787`
-- Menghubungkan HP ke **LLM** (OpenRouter / OpenAI-compatible / Gemini) via function calling
-- Mengeksekusi aksi nyata di HP lewat **tool** — bukan sekadar menjawab teks
-- Berjalan otomatis saat boot sebagai **systemless module** dengan notifikasi persisten
-
-Singkatnya: **asisten AI yang bisa mengatur HP kamu sendiri.**
+**维护者**：[@qingxia5201314](https://github.com/qingxia5201314)
+**上游项目**：[zafxyra/ZafxyrAgent](https://github.com/zafxyra/ZafxyrAgent)（作者 [@zafxyra](https://github.com/zafxyra)）
+**上游原版文档**：[README.id.md](README.id.md)（印尼语，原样保留）
 
 ---
 
-## Fitur
+## 这个 fork 改了什么
 
-- **Multi-provider LLM** — OpenRouter, endpoint OpenAI-compatible, atau Google Gemini
-- **Automatic model fallback** — model utama error/kena limit, otomatis coba model cadangan
-- **13 tool eksekusi** nyata di perangkat (lihat daftar di bawah)
-- **Live streaming UI** — jawaban muncul token-per-token + panel progress tiap aksi (SSE)
-- **Sugesti chip ("SARAN")** — saran aksi lanjutan yang bisa langsung ditekan
-- **Pengingat otomatis** (`schedule_message`) — mis. "ingetin 10 menit lagi minum obat"
-- **Pemilih model** langsung dari UI chat
-- **Notifikasi foreground service** — tap untuk buka chat, auto-start saat boot
-- **Systemless** — dipasang sebagai module, gampang dibersihkan lewat uninstall
+基于上游 `bb071a2`，主要做了三件事：
+
+### 1. 新增 6 个界面操作工具（核心）
+
+上游版本只能开关应用和跑 shell——**看不见也点不了屏幕**，所以"打开微信给张三发消息"这种多步任务做不了。这个 fork 补上了这条链路：
+
+| 工具 | 作用 |
+|---|---|
+| `screen` | 读 `uiautomator dump`，解析成「文字 @(x,y) 可点」的紧凑列表，比截图省一个数量级的 token |
+| `tap` | 按 `screen` 返回的坐标点击；`duration_ms>=400` 视为长按 |
+| `swipe` | 滚动、翻页、下拉通知栏 |
+| `key` | 按键（HOME/BACK/ENTER/POWER…），白名单校验，非白名单也不是纯数字的一律拒绝 |
+| `text` | 向输入框输入文字，优先走 ADBKeyboard 通道以支持中文 |
+| `screenshot` | 截屏存 PNG 并返回路径 |
+
+坐标一律取节点 bounds 的中心点，模型直接照抄，不用"看图猜位置"。
+
+### 2. 中文化
+
+- 聊天的 system prompt 改为中文，并写入 `screen → tap → screen` 操作循环
+- Web UI 界面文案中文化
+- 默认模型改为 DeepSeek（`https://api.deepseek.com/v1`）
+
+### 3. 修了 8 个 bug
+
+| 问题 | 后果 |
+|---|---|
+| 配置文件缺失时 `loadConfig` 提前 return | 所有默认值失效，端口绑到 `0`（随机端口），界面根本连不上 |
+| `notify` 对已卸载的 app 重试 30 次 × 4 秒 | 日志刷两分钟 |
+| `truncate` 按字节截断 | 中文被劈成半个 UTF-8，界面显示乱码 |
+| 配置只从模块目录读 | 刷模块更新会覆盖你的 API Key；且 README 写的路径和代码实际读的不是一个 |
+| 改 `base_url` 不切 provider | 配了 DeepSeek 却仍走 Gemini 协议，静默失败 |
+| 设置模型不同步 `models` 列表 | 下拉框选不中刚设的模型 |
+| 页面加载时自动随机换模型 | 你配的模型被悄悄换掉，用错 key 直接报错 |
+| `saveConfig` 写 0644 | 含 API Key 的文件对别的应用可读（改为 0600） |
+
+另有 9 个单元测试覆盖 UI 解析、坐标解析、UTF-8 截断、命令注入防护、配置优先级。
 
 ---
 
-## Persyaratan
+## 它是什么
 
-| Kebutuhan | Detail |
-|-----------|--------|
-| Android | **14+** (minSdk 34) |
-| Root | **KernelSU**, **Magisk**, atau **APatch** |
-| API Key | Dari salah satu provider (rekomendasi: [OpenRouter](https://openrouter.ai)) |
+一个 **KernelSU / Magisk / APatch 模块**，在手机里以 `root` 身份跑一个小 daemon（Go 写的）。这个 daemon：
 
----
+- 在 `http://127.0.0.1:8787` 提供一个轻量 Web 聊天界面（WebView 打开）
+- 通过 function calling 把你的手机接到 LLM（OpenAI 兼容 / Gemini）
+- 通过**工具**在手机上真的执行动作，而不是只回你一段话
 
-## Instalasi
-
-1. Unduh file module dari halaman **Releases** (`aiagent_notif_vX.Y.Z.zip`)
-2. Buka **KernelSU / Magisk / APatch** → **Modules** → **Install from storage**
-3. Pilih file zip tadi, lalu **reboot** HP
-4. Setelah menyala, tarik notifikasi **"ZafxyrAgent AI"** → tap untuk membuka chat
-
-Saat instalasi, module otomatis memasang aplikasi pendamping (`com.zafxyra.agent`) beserta izin notifikasinya.
+装好并以 root 运行后，它就是一个"能自己动手"的助手。
 
 ---
 
-## Konfigurasi
+## 环境要求
 
-Edit file konfigurasi di:
+| 项 | 要求 |
+|---|---|
+| Android | 14+（minSdk 34） |
+| Root | KernelSU、Magisk 或 APatch |
+| 架构 | arm64-v8a |
+| API Key | 任意 OpenAI 兼容端点（DeepSeek / OpenRouter / 自建 llama.cpp），或 Gemini |
+
+---
+
+## 安装
+
+1. 下载模块 zip（Releases 或自己打包）
+2. KernelSU / Magisk / APatch → **模块** → **从存储安装** → 选 zip
+3. 重启手机
+4. 下拉通知栏，点 **「ZafxyrAgent AI」** 打开聊天界面
+
+安装脚本会自动安装配套 app（`com.zafxyra.agent`）并授予通知权限。
+
+### 自己打包
+
+```bash
+./build.sh          # 交叉编译 arm64 到 ai-agent-module/module/bin/agentd
+./pack.sh out.zip   # 打包成可刷入的 zip
+```
+
+> **Windows 用户注意**：`pack.sh` 会把文本文件统一转成 LF 并自检。
+> git 在 Windows 上会把 `.sh` / `module.prop` / `update-binary` 自动转成 CRLF，
+> 直接打包刷进去会让安装脚本报 `syntax error: unexpected end of file`。
+
+---
+
+## 配置
+
+**两种方式，任选**：
+
+### A. 界面里改（推荐）
+
+打开聊天界面 → 右上角 **设置** → 填 API 地址、Key、模型 → 保存。
+
+### B. 改文件
 
 ```
 /data/adb/aiagent/config.json
 ```
 
-| Field | Tipe | Keterangan |
-|-------|------|------------|
-| `provider` | string | `openai` (OpenAI-compatible / OpenRouter) atau `gemini` |
-| `api_key` | string | API key provider kamu |
-| `base_url` | string | Base URL endpoint, mis. `https://openrouter.ai/api/v1` |
-| `model` | string | Model utama |
-| `fallback_models` | array | Model cadangan saat model utama gagal |
-| `models` | array | Daftar model yang muncul di pemilih model UI |
-| `max_tokens` | int | Maksimum token balasan |
-| `system` | string | System prompt agent |
-| `port` | int | Port daemon (default `8787`) |
-| `autoopen` | bool | Buka UI otomatis saat boot |
-| `allow_shell` | bool | Izinkan tool `run_shell` (akses root shell) |
+> 配置文件在**用户目录**而不是模块目录，刷模块更新不会覆盖它。
+> 模块目录里那份 `/data/adb/modules/aiagent/config.json` 只是出厂模板。
 
-Setelah mengubah config, restart daemon atau reboot HP agar berlaku.
-
----
-
-## Contoh perintah
-
-```
-buka WhatsApp
-cek sisa storage
-list file di Download
-buka google.com
-unduh file dari url ini ke Download
-ingetin aku 10 menit lagi minum obat
-bikin file catatan.txt isinya daftar belanja
+```json
+{
+  "provider": "openai",
+  "api_key": "sk-xxx",
+  "base_url": "https://api.deepseek.com/v1",
+  "model": "deepseek-chat",
+  "max_tokens": 2048,
+  "port": 8787,
+  "autoopen": true,
+  "allow_shell": true
+}
 ```
 
----
+| 字段 | 说明 |
+|---|---|
+| `provider` | `openai`（OpenAI 兼容）或 `gemini` |
+| `api_key` | 你的 key |
+| `base_url` | OpenAI 兼容端点；指向 Google 的会自动按 gemini 处理 |
+| `model` | 模型名 |
+| `port` | daemon 端口，默认 8787 |
+| `autoopen` | 开机后自动打开聊天界面 |
+| `allow_shell` | 是否允许 `run_shell`（root 执行任意命令） |
 
-## Tool yang tersedia
-
-| Tool | Fungsi |
-|------|--------|
-| `open_app` | Buka aplikasi yang terinstall |
-| `open_path` | Buka file/folder dengan aplikasi bawaan |
-| `open_url` | Buka link di browser |
-| `web_search` | Cari informasi di internet |
-| `run_shell` | Jalankan perintah root shell |
-| `write_file` | Tulis / buat file baru |
-| `read_file` | Baca isi file teks |
-| `list_dir` | Tampilkan isi direktori |
-| `make_dir` | Buat folder |
-| `move_file` | Pindah / ganti nama file atau folder |
-| `delete_path` | Hapus file atau folder |
-| `download_url` | Unduh file dari internet lalu simpan ke HP |
-| `schedule_message` | Jadwalkan pesan otomatis (reminder) |
+改完重启模块生效（界面里改则即时生效）。
 
 ---
 
-## HTTP API (lokal)
+## 工具一览（19 个）
 
-Daemon listen di `127.0.0.1:8787`:
+**打开类**：`open_app` `open_path` `open_url` `web_search`
+**界面类**：`screen` `tap` `swipe` `key` `text` `screenshot`
+**系统类**：`run_shell`（root）
+**文件类**：`read_file` `write_file` `list_dir` `make_dir` `move_file` `delete_path` `download_url`
+**提醒类**：`schedule_message`
 
-| Endpoint | Method | Fungsi |
-|----------|--------|--------|
-| `/` | GET | Web chat UI |
-| `/chat` | POST | Kirim pesan ke agent |
-| `/events` | GET | Stream SSE (status / token / tool / reply) |
-| `/models` | GET | Daftar model yang tersedia |
-| `/model` | POST | Set model aktif |
-| `/model/random` | POST | Pilih model acak |
-| `/history` | GET | Riwayat percakapan |
-| `/reset` | POST | Reset riwayat |
-
----
-
-## Build dari source
-
-### Daemon `agentd` (Go)
-
-```bash
-cd ai-agent-module/src
-GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
-  go build -trimpath -ldflags "-s -w" -o ../module/bin/agentd main.go
-```
-
-### APK pendamping (Windows)
-
-Jalankan `ai-agent-app\build.ps1`. Membutuhkan JDK 17, serta `aapt2`, `d8`, `zipalign`, dan `apksigner` dari Android SDK Build-Tools.
-
-### Paket module
-
-Bungkus isi folder `ai-agent-module/module` menjadi sebuah `.zip` (pastikan path di dalam zip memakai separator `/`).
-
----
-
-## Struktur repo
+### 典型用法
 
 ```
-AI-Agent/
-├── ai-agent-module/       # module KernelSU/Magisk + source daemon
-│   ├── module/            # isi zip module (config, scripts, apk, binary)
-│   └── src/               # source Go (main.go + web UI)
-└── ai-agent-app/          # source APK pendamping (Java)
+看看现在屏幕上有什么
+打开设置，把深色模式打开
+打开微信，搜索"张三"，进对话
+把 Download 里的 apk 都归到一个文件夹
+看看电量还剩多少
+10 分钟后提醒我吃药
 ```
 
 ---
 
-## Keamanan
+## 已知限制
 
-> **Penting.** Daemon ini berjalan sebagai **root** dan dapat menjalankan perintah shell serta mengubah file di HP kamu. Pasang hanya di perangkat yang kamu pahami risikonya. Set `allow_shell` ke `false` jika tidak memerlukan akses shell.
-
----
-
-## Disclaimer
-
-Proyek ini dibuat untuk keperluan belajar dan eksperimen. Gunakan dengan tanggung jawab sendiri. Penulis tidak bertanggung jawab atas kerusakan atau penyalahgunaan.
+1. **中文输入**：Android 的 `input text` 只稳定支持 ASCII。装 [ADBKeyboard](https://github.com/senzhk/ADBKeyboard) 后中文才能可靠输入，否则会走降级通道并如实告知你。
+2. **FLAG_SECURE 界面**：银行、支付类 App 的截图全黑、UI 树为空，root 也绕不过（系统级保护）。
+3. **本地端口**：服务只监听 `127.0.0.1`，同网段访问不到（这是有意的）。
+4. **APK 界面文案**：配套 app 里有 4 处印尼语提示（错误提示、通知渠道），尚未中文化。
 
 ---
 
-## Lisensi
+## 安全提醒
 
-MIT — lihat file `LICENSE`.
+- daemon 以 **root** 运行，`run_shell` 等于把 root 交给一个 LLM。不需要就去 config 里把 `allow_shell` 设为 `false`。
+- 正在进行的不可逆操作（删文件、卸载应用、发消息、付款），system prompt 要求它先说明再执行——但这只是提示，不是硬约束。**重要数据自己确认**。
+- 配置文件权限 0600，别改成 0644。
 
 ---
 
-## Kredit
+## 致谢
 
-- Author: **ig:@zafxyra** + opencode
+- 原作者 **[@zafxyra](https://github.com/zafxyra)**：整个项目的基础架构、daemon、Web UI、工具框架都来自上游
+- 上游 README 原样保留在 [README.id.md](README.id.md)
+
+## License
+
+MIT — 见 [LICENSE](LICENSE)。原始版权归 Zafxyra 所有。
