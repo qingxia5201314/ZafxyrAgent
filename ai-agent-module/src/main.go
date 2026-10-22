@@ -16,9 +16,11 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -374,17 +376,147 @@ func randomModel() string {
 	return pick
 }
 
-func historyPath() string { return filepath.Join(home, "history.json") }
+// ==================== 会话管理 ====================
+//
+// 早期版本只有一条线性的 history.json。现在换成多会话：每条会话独立保存消息，
+// 可切换、可归档、可删除，归档可以一键清空。旧的 history.json 在首次启动时
+// 自动迁移成一条会话，不丢数据。
 
-func loadHistory() {
-	if b, err := os.ReadFile(historyPath()); err == nil {
-		json.Unmarshal(b, &hist)
+type Session struct {
+	ID       string    `json:"id"`
+	Title    string    `json:"title"`
+	Created  time.Time `json:"created"`
+	Updated  time.Time `json:"updated"`
+	Archived bool      `json:"archived"`
+	Messages []Msg     `json:"messages"`
+}
+
+var (
+	sessions []*Session
+	activeID string
+)
+
+func historyPath() string  { return filepath.Join(home, "history.json") }
+func sessionsPath() string { return filepath.Join(home, "sessions.json") }
+
+func newSessionID() string {
+	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
+// activeSession 返回当前会话。sessions 里可能有 nil（JSON 里的 null），要跳过。
+func activeSession() *Session {
+	for _, s := range sessions {
+		if s != nil && s.ID == activeID {
+			return s
+		}
+	}
+	return nil
+}
+
+func titleFromMessages(msgs []Msg) string {
+	for _, m := range msgs {
+		if m.Role == "user" {
+			if t := strings.TrimSpace(m.Content); t != "" {
+				return truncate(t, 24)
+			}
+		}
+	}
+	return "新会话"
+}
+
+func makeSession() *Session {
+	now := time.Now()
+	return &Session{ID: newSessionID(), Title: "新会话", Created: now, Updated: now}
+}
+
+// loadSessions 启动时调用（单线程，不需要锁）。
+func loadSessions() {
+	if b, err := os.ReadFile(sessionsPath()); err == nil {
+		var st struct {
+			Active   string     `json:"active"`
+			Sessions []*Session `json:"sessions"`
+		}
+		if err := json.Unmarshal(b, &st); err == nil {
+			sessions = st.Sessions
+			activeID = st.Active
+		}
+	} else if old, e2 := os.ReadFile(historyPath()); e2 == nil {
+		// 旧版单文件历史，迁移一次
+		var msgs []Msg
+		if json.Unmarshal(old, &msgs) == nil && len(msgs) > 0 {
+			s := makeSession()
+			s.Messages = msgs
+			s.Title = titleFromMessages(msgs)
+			sessions = []*Session{s}
+			activeID = s.ID
+			log.Printf("migrated legacy history.json (%d msgs) into session %s", len(msgs), s.ID)
+		}
+	}
+
+	// 丢掉 nil 和空 ID，后面所有遍历就不用再判空
+	cleaned := make([]*Session, 0, len(sessions))
+	for _, s := range sessions {
+		if s != nil && s.ID != "" {
+			cleaned = append(cleaned, s)
+		}
+	}
+	sessions = cleaned
+
+	if len(sessions) == 0 {
+		s := makeSession()
+		sessions = []*Session{s}
+		activeID = s.ID
+	}
+	if activeSession() == nil {
+		activeID = sessions[0].ID
+	}
+	hist = append([]Msg(nil), activeSession().Messages...)
+}
+
+// saveSessions 落盘。调用方需持有 mu。
+func saveSessions() {
+	st := struct {
+		Active   string     `json:"active"`
+		Sessions []*Session `json:"sessions"`
+	}{activeID, sessions}
+	if b, err := json.MarshalIndent(st, "", " "); err == nil {
+		os.WriteFile(sessionsPath(), b, 0600)
 	}
 }
 
-func saveHistory() {
-	b, _ := json.MarshalIndent(hist, "", " ")
-	os.WriteFile(historyPath(), b, 0600)
+// ensureActive 保证 activeID 指向一条存在且未归档的会话，并把 hist 换过去。
+// 归档/删除之后必须调用：否则会出现「唯一的会话被归档了，但 activeID 仍指着它」
+// 的僵局——未归档列表空着，界面却认为还有当前会话。
+func ensureActive() {
+	if s := activeSession(); s != nil && !s.Archived {
+		return
+	}
+	for _, c := range sessions {
+		if !c.Archived {
+			activeID = c.ID
+			hist = append([]Msg(nil), c.Messages...)
+			return
+		}
+	}
+	// 一条未归档的都不剩，建一条新的
+	s := makeSession()
+	sessions = append(sessions, s)
+	activeID = s.ID
+	hist = nil
+}
+
+// syncActive 把工作副本 hist 写回当前会话并落盘。调用方需持有 mu。
+func syncActive() {
+	if s := activeSession(); s != nil {
+		s.Messages = append([]Msg(nil), hist...)
+		s.Updated = time.Now()
+		if len(s.Messages) > 0 {
+			if t := titleFromMessages(s.Messages); t != "新会话" {
+				s.Title = t
+			}
+		}
+	}
+	saveSessions()
 }
 
 func notify(title, text, url string) {
@@ -1344,64 +1476,64 @@ func toolStatus(name string, args map[string]interface{}) string {
 	switch name {
 	case "open_app":
 		if a := argStr(args, "app"); a != "" {
-			return "Membuka " + a + "..."
+			return "打开 " + a + "…"
 		}
-		return "Membuka aplikasi..."
+		return "打开应用…"
 	case "open_url":
-		return "Membuka tautan..."
+		return "打开链接…"
 	case "web_search":
 		if q := argStr(args, "query"); q != "" {
-			return "Mencari \"" + q + "\"..."
+			return "搜索「" + q + "」…"
 		}
-		return "Mencari di Google..."
+		return "搜索网页…"
 	case "run_shell":
-		return "Menjalankan perintah..."
+		return "执行命令…"
 	case "write_file":
-		return "Menulis file..."
+		return "写入文件…"
 	case "read_file":
-		return "Membaca file..."
+		return "读取文件…"
 	case "list_dir":
-		return "Melihat isi folder..."
+		return "查看目录…"
 	case "make_dir":
-		return "Membuat folder..."
+		return "创建目录…"
 	case "move_file":
-		return "Memindahkan/mengganti nama..."
+		return "移动/重命名…"
 	case "delete_path":
-		return "Menghapus..."
+		return "删除中…"
 	case "download_url":
-		return "Mengunduh file..."
+		return "下载文件…"
 	case "open_path":
 		if p := argStr(args, "path"); p != "" {
-			return "Membuka " + p + "..."
+			return "打开 " + p + "…"
 		}
-		return "Membuka file/folder..."
+		return "打开文件/目录…"
 	case "schedule_message":
 		if d := int(numArg(args, "delay_seconds")); d > 0 {
-			return fmt.Sprintf("Menjadwalkan pengingat (%d detik)...", d)
+			return fmt.Sprintf("设置提醒（%d 秒后）…", d)
 		}
-		return "Menjadwalkan pengingat..."
+		return "设置提醒…"
 	// ---- UI 自动化 ----
 	case "screen":
-		return "Membaca layar..."
+		return "读取屏幕…"
 	case "tap":
 		if x, y := int(numArg(args, "x")), int(numArg(args, "y")); x > 0 || y > 0 {
-			return fmt.Sprintf("Mengetuk (%d,%d)...", x, y)
+			return fmt.Sprintf("点击 (%d,%d)…", x, y)
 		}
-		return "Mengetuk layar..."
+		return "点击屏幕…"
 	case "swipe":
-		return "Menggeser layar..."
+		return "滑动屏幕…"
 	case "key":
 		if k := argStr(args, "key"); k != "" {
-			return "Menekan tombol " + strings.ToUpper(k) + "..."
+			return "按键 " + strings.ToUpper(k) + "…"
 		}
-		return "Menekan tombol..."
+		return "按键…"
 	case "text":
 		if t := argStr(args, "text"); t != "" {
-			return "Mengetik \"" + truncate(t, 20) + "\"..."
+			return "输入「" + truncate(t, 20) + "」…"
 		}
-		return "Mengetik..."
+		return "输入文字…"
 	case "screenshot":
-		return "Mengambil tangkapan layar..."
+		return "截屏…"
 	}
 	return ""
 }
@@ -1520,7 +1652,7 @@ func pushMessage(text string) {
 	}
 	mu.Lock()
 	hist = append(hist, Msg{Role: "assistant", Content: text})
-	saveHistory()
+	syncActive()
 	mu.Unlock()
 	broadcast(event{Type: "message", Text: text})
 	log.Printf("[push] %s", truncate(text, 200))
@@ -1531,7 +1663,7 @@ func pushMessage(text string) {
 func scheduleMessage(delaySec int, text string) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return "pesan kosong, dibatalkan"
+		return "消息为空，已取消"
 	}
 	if delaySec < 0 {
 		delaySec = 0
@@ -2306,11 +2438,12 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	msg := strings.TrimSpace(in.Message)
 	if msg == "" {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"error": "pesan kosong"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "消息为空"})
 		return
 	}
 	mu.Lock()
 	hist = append(hist, Msg{Role: "user", Content: msg})
+	syncActive()
 	mu.Unlock()
 
 	resetActions()
@@ -2323,7 +2456,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[quickIntent] %q -> %q", msg, r2)
 		reply = r2
 	} else {
-		status("Berpikir...")
+		status("思考中…")
 		mu.Lock()
 		msgs := make([]Msg, 0, len(hist)+1)
 		msgs = append(msgs, Msg{Role: "system", Content: cfg.System})
@@ -2353,7 +2486,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 
 	mu.Lock()
 	hist = append(hist, Msg{Role: "assistant", Content: clean})
-	saveHistory()
+	syncActive()
 	mu.Unlock()
 
 	broadcast(event{Type: "reply", Text: clean, Suggestions: sugg})
@@ -2379,7 +2512,7 @@ func handleSetModel(w http.ResponseWriter, r *http.Request) {
 	json.NewDecoder(r.Body).Decode(&in)
 	w.Header().Set("Content-Type", "application/json")
 	if !setModel(in.Model) {
-		json.NewEncoder(w).Encode(map[string]string{"error": "model kosong"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "模型名为空"})
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]string{"model": in.Model})
@@ -2394,17 +2527,281 @@ func handleRandomModel(w http.ResponseWriter, r *http.Request) {
 
 func handleHistory(w http.ResponseWriter, r *http.Request) {
 	mu.Lock()
-	defer mu.Unlock()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(hist)
+	snapshot := append([]Msg(nil), hist...)
+	mu.Unlock()
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(snapshot)
 }
 
 func handleReset(w http.ResponseWriter, r *http.Request) {
 	mu.Lock()
 	hist = nil
-	saveHistory()
+	syncActive()
 	mu.Unlock()
 	json.NewEncoder(w).Encode(map[string]string{"ok": "true"})
+}
+
+// ==================== 会话 API ====================
+
+type sessionMeta struct {
+	ID       string    `json:"id"`
+	Title    string    `json:"title"`
+	Created  time.Time `json:"created"`
+	Updated  time.Time `json:"updated"`
+	Count    int       `json:"count"`
+	Active   bool      `json:"active"`
+	Archived bool      `json:"archived"`
+}
+
+func jsonReply(w http.ResponseWriter, code int, v interface{}) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(v)
+}
+
+func handleSessions(w http.ResponseWriter, r *http.Request) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	switch r.Method {
+	case http.MethodGet:
+		wantArchived := r.URL.Query().Get("archived") == "1"
+		out := make([]sessionMeta, 0, len(sessions))
+		for _, s := range sessions {
+			if s.Archived != wantArchived {
+				continue
+			}
+			out = append(out, sessionMeta{
+				ID: s.ID, Title: s.Title, Created: s.Created, Updated: s.Updated,
+				Count: len(s.Messages), Active: s.ID == activeID, Archived: s.Archived,
+			})
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].Updated.After(out[j].Updated) })
+		jsonReply(w, 200, map[string]interface{}{"sessions": out, "active": activeID})
+
+	case http.MethodPost:
+		// 新建会话并立刻切过去
+		s := makeSession()
+		sessions = append(sessions, s)
+		activeID = s.ID
+		hist = nil
+		saveSessions()
+		log.Printf("[session] new %s", s.ID)
+		jsonReply(w, 200, map[string]interface{}{"ok": true, "id": s.ID})
+
+	case http.MethodDelete:
+		id := r.URL.Query().Get("id")
+		idx := -1
+		for i, s := range sessions {
+			if s.ID == id {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			jsonReply(w, 404, map[string]interface{}{"ok": false, "error": "not found"})
+			return
+		}
+		sessions = append(sessions[:idx], sessions[idx+1:]...)
+		if activeID == id {
+			ensureActive()
+		}
+		saveSessions()
+		log.Printf("[session] deleted %s", id)
+		jsonReply(w, 200, map[string]interface{}{"ok": true, "active": activeID})
+
+	default:
+		jsonReply(w, 405, map[string]interface{}{"ok": false, "error": "method not allowed"})
+	}
+}
+
+func handleSessionSwitch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonReply(w, 405, map[string]interface{}{"ok": false})
+		return
+	}
+	var body struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, s := range sessions {
+		if s.ID == body.ID {
+			activeID = s.ID
+			hist = append([]Msg(nil), s.Messages...)
+			saveSessions()
+			jsonReply(w, 200, map[string]interface{}{"ok": true, "id": s.ID, "messages": hist})
+			return
+		}
+	}
+	jsonReply(w, 404, map[string]interface{}{"ok": false, "error": "not found"})
+}
+
+func handleSessionArchive(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonReply(w, 405, map[string]interface{}{"ok": false})
+		return
+	}
+	var body struct {
+		ID       string `json:"id"`
+		Archived bool   `json:"archived"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	var target *Session
+	for _, s := range sessions {
+		if s.ID == body.ID {
+			target = s
+			break
+		}
+	}
+	if target == nil {
+		jsonReply(w, 404, map[string]interface{}{"ok": false, "error": "not found"})
+		return
+	}
+	target.Archived = body.Archived
+	target.Updated = time.Now()
+	if body.Archived {
+		// 归档的可能就是当前会话，切走并保证有一条可用的
+		ensureActive()
+	}
+	saveSessions()
+	log.Printf("[session] archived=%v %s", body.Archived, body.ID)
+	jsonReply(w, 200, map[string]interface{}{"ok": true, "active": activeID})
+}
+
+// handleArchivedClear 一键删除全部已归档会话。
+func handleArchivedClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete && r.Method != http.MethodPost {
+		jsonReply(w, 405, map[string]interface{}{"ok": false})
+		return
+	}
+	mu.Lock()
+	defer mu.Unlock()
+
+	kept := make([]*Session, 0, len(sessions))
+	removed := 0
+	for _, s := range sessions {
+		if s.Archived {
+			removed++
+			continue
+		}
+		kept = append(kept, s)
+	}
+	sessions = kept
+	ensureActive()
+	saveSessions()
+	log.Printf("[session] cleared %d archived", removed)
+	jsonReply(w, 200, map[string]interface{}{"ok": true, "removed": removed, "active": activeID})
+}
+
+// ==================== 模型列表 ====================
+
+var (
+	modelCacheMu sync.Mutex
+	modelCache   []string
+	modelCacheAt time.Time
+)
+
+// fetchRemoteModels 向 provider 拉真实可用的模型列表，缓存 10 分钟。
+func fetchRemoteModels(force bool) ([]string, bool, error) {
+	modelCacheMu.Lock()
+	defer modelCacheMu.Unlock()
+
+	if !force && len(modelCache) > 0 && time.Since(modelCacheAt) < 10*time.Minute {
+		return append([]string(nil), modelCache...), true, nil
+	}
+	key := strings.TrimSpace(cfg.APIKey)
+	if key == "" {
+		return nil, false, fmt.Errorf("还没配置 API Key")
+	}
+	base := strings.TrimSuffix(strings.TrimSpace(cfg.BaseURL), "/")
+	var ids []string
+
+	if cfg.Provider == "gemini" {
+		u := base + "/models?key=" + url.QueryEscape(key)
+		resp, err := httpClient(20 * time.Second).Get(u)
+		if err != nil {
+			return nil, false, fmt.Errorf("请求失败: %v", err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		if resp.StatusCode != 200 {
+			return nil, false, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(string(body), 180))
+		}
+		var out struct {
+			Models []struct {
+				Name string `json:"name"`
+			} `json:"models"`
+		}
+		if err := json.Unmarshal(body, &out); err != nil {
+			return nil, false, err
+		}
+		for _, m := range out.Models {
+			n := strings.TrimPrefix(m.Name, "models/")
+			if strings.Contains(n, "gemini") {
+				ids = append(ids, n)
+			}
+		}
+	} else {
+		req, err := http.NewRequest(http.MethodGet, base+"/models", nil)
+		if err != nil {
+			return nil, false, err
+		}
+		req.Header.Set("Authorization", "Bearer "+key)
+		resp, err := httpClient(20 * time.Second).Do(req)
+		if err != nil {
+			return nil, false, fmt.Errorf("请求失败: %v", err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		if resp.StatusCode != 200 {
+			return nil, false, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(string(body), 180))
+		}
+		var out struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body, &out); err != nil {
+			return nil, false, err
+		}
+		for _, m := range out.Data {
+			if strings.TrimSpace(m.ID) != "" {
+				ids = append(ids, m.ID)
+			}
+		}
+	}
+
+	if len(ids) == 0 {
+		return nil, false, fmt.Errorf("端点没有返回任何模型")
+	}
+	sort.Strings(ids)
+	modelCache = ids
+	modelCacheAt = time.Now()
+	log.Printf("[models] fetched %d from %s", len(ids), base)
+	return append([]string(nil), ids...), false, nil
+}
+
+func handleModelsRemote(w http.ResponseWriter, r *http.Request) {
+	force := r.URL.Query().Get("refresh") == "1"
+	ids, cached, err := fetchRemoteModels(force)
+	if err != nil {
+		// 拉不到就退回配置里的列表，前端至少有东西可选
+		jsonReply(w, 200, map[string]interface{}{
+			"ok": false, "error": err.Error(),
+			"models": cfg.Models, "current": cfg.Model, "fallback": true,
+		})
+		return
+	}
+	jsonReply(w, 200, map[string]interface{}{
+		"ok": true, "models": ids, "current": cfg.Model, "cached": cached,
+	})
 }
 
 // handleConfig 让用户在聊天界面里直接改配置，不用 root 编辑器去动 JSON。
@@ -2482,7 +2879,7 @@ func main() {
 
 	log.Printf("aiagent starting moddir=%s home=%s", modDir, home)
 	loadConfig()
-	loadHistory()
+	loadSessions()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -2496,6 +2893,11 @@ func main() {
 	mux.HandleFunc("/history", handleHistory)
 	mux.HandleFunc("/reset", handleReset)
 	mux.HandleFunc("/config", handleConfig)
+	mux.HandleFunc("/sessions", handleSessions)
+	mux.HandleFunc("/sessions/switch", handleSessionSwitch)
+	mux.HandleFunc("/sessions/archive", handleSessionArchive)
+	mux.HandleFunc("/sessions/archived", handleArchivedClear)
+	mux.HandleFunc("/models/remote", handleModelsRemote)
 	mux.HandleFunc("/events", handleEvents)
 
 	// 调试端点：仅在环境变量 AGENTD_DEBUG=1 时挂载，用于在真机上直接验证工具行为

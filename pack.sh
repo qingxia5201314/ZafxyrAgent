@@ -22,6 +22,8 @@ root = 'ai-agent-module/module'
 SCRIPT_NAMES = {'update-binary', 'updater-script'}
 # 必须保持原样的二进制
 BINARY_NAMES = {'agentd'}
+# 构建中间产物，永远不该进模块包
+SKIP_NAMES = {'agentd.new', 'agentd.baseline', '.DS_Store', 'Thumbs.db'}
 TEXT_EXT = {'.sh', '.prop', '.json', '.xml', '.md', '.pem', '.txt'}
 
 
@@ -38,6 +40,8 @@ converted = []
 with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
     for dp, _, files in os.walk(root):
         for f in sorted(files):
+            if f in SKIP_NAMES:
+                continue
             full = os.path.join(dp, f)
             arc = os.path.relpath(full, root).replace('\\', '/')
             if is_text(arc):

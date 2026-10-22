@@ -187,3 +187,44 @@ func TestConfigPathPriority(t *testing.T) {
 		t.Errorf("配置缺失时默认值不全: model=%q baseURL=%q", cfg.Model, cfg.BaseURL)
 	}
 }
+
+// 归档掉唯一的会话后，必须自动有一条可用的 active 会话。
+// 这是真机上踩到的：归档后未归档列表空了，activeID 却还指着那条已归档的，
+// 界面从此处于僵局（点哪里都没反应）。
+func TestEnsureActiveAfterArchiveAll(t *testing.T) {
+	oldSessions, oldActive, oldHist := sessions, activeID, hist
+	defer func() { sessions, activeID, hist = oldSessions, oldActive, oldHist }()
+
+	// 场景一：只剩一条会话，归档它
+	s := &Session{ID: "s1", Title: "唯一会话"}
+	sessions = []*Session{s}
+	activeID = s.ID
+	hist = []Msg{{Role: "user", Content: "hi"}}
+
+	s.Archived = true
+	ensureActive()
+
+	cur := activeSession()
+	if cur == nil {
+		t.Fatal("归档唯一的会话后，应存在一条可用会话")
+	}
+	if cur.Archived {
+		t.Error("active 不应指向已归档的会话")
+	}
+	if cur.ID == s.ID {
+		t.Error("应新建一条会话，而不是继续用已归档的那条")
+	}
+	if len(hist) != 0 {
+		t.Errorf("新会话的消息应为空，得到 %d 条", len(hist))
+	}
+
+	// 场景二：还有别的未归档会话，应切过去而不是新建
+	a := &Session{ID: "a1", Archived: true}
+	b := &Session{ID: "b1"}
+	sessions = []*Session{a, b}
+	activeID = "a1"
+	ensureActive()
+	if activeID != "b1" {
+		t.Errorf("应切到未归档的 b1，得到 %q", activeID)
+	}
+}

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">ZafxyrAgent AI</string>
-    <string name="channel_name">ZafxyrAgent AI</string>
-    <string name="channel_desc">Tap untuk buka chat ZafxyrAgent AI</string>
+    <string name="app_name">ZafxyrAgent</string>
+    <string name="channel_name">ZafxyrAgent</string>
+    <string name="channel_desc">点按打开 ZafxyrAgent 聊天界面</string>
 </resources>
